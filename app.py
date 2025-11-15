@@ -1,5 +1,6 @@
 import os
 import json
+import traceback
 import uuid
 import time
 import sqlite3
@@ -138,9 +139,11 @@ def _refresh_stale_tokens():
                         try:
                             refresh_access_token_in_db(acc_id)
                         except Exception:
+                            traceback.print_exc()
                             # Ignore per-account refresh failure; timestamp/status are recorded inside
                             pass
         except Exception:
+            traceback.print_exc()
             pass
 
 threading.Thread(target=_refresh_stale_tokens, daemon=True).start()
