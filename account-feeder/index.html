@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <title>Amazon Q 账号投喂 · URL 登录</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    :root {
+      --bg:#0a0e1a;
+      --panel:#0f1420;
+      --muted:#8b95a8;
+      --text:#e8f0ff;
+      --accent:#4f8fff;
+      --border:#1a2332;
+      --glow:rgba(79,143,255,.15);
+    }
+    * { box-sizing:border-box; }
+    html, body { height:100%; margin:0; }
+    body {
+      padding:0 0 40px;
+      background:radial-gradient(ellipse at top, #0f1624 0%, #0a0e1a 100%);
+      color:var(--text);
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Hiragino Sans GB,Microsoft YaHei,Noto Sans,Arial,sans-serif;
+      line-height:1.6;
+    }
+    h1,h2 { font-weight:700; letter-spacing:-.02em; margin:0; }
+    h1 { font-size:28px; margin:24px 0 12px; background:linear-gradient(135deg,#4f8fff,#7b9fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+    h2 { font-size:18px; margin:20px 0 16px; color:#c5d4ff; }
+    .container { max-width:800px; margin:0 auto; padding:20px; }
+    .panel {
+      background:linear-gradient(145deg,rgba(15,20,32,.8),rgba(10,14,26,.9));
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:24px;
+      box-shadow:0 20px 60px rgba(0,0,0,.4),0 0 0 1px rgba(79,143,255,.08),inset 0 1px 0 rgba(255,255,255,.03);
+      backdrop-filter:blur(12px);
+      transition:transform .2s,box-shadow .2s;
+    }
+    .panel:hover { transform:translateY(-2px); box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 0 1px rgba(79,143,255,.12),inset 0 1px 0 rgba(255,255,255,.04); }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    label { color:var(--muted); font-size:13px; font-weight:500; letter-spacing:.01em; }
+    .field { display:flex; flex-direction:column; gap:8px; flex:1; min-width:200px; }
+    input {
+      background:rgba(12,16,28,.6);
+      color:var(--text);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:12px 14px;
+      outline:none;
+      transition:all .2s;
+      font-size:14px;
+      box-shadow:inset 0 1px 2px rgba(0,0,0,.2);
+    }
+    input:focus {
+      border-color:var(--accent);
+      box-shadow:0 0 0 3px var(--glow),inset 0 1px 2px rgba(0,0,0,.2);
+      background:rgba(12,16,28,.8);
+    }
+    button {
+      background:linear-gradient(135deg,#2563eb,#1e40af);
+      color:#fff;
+      border:none;
+      border-radius:12px;
+      padding:12px 20px;
+      font-weight:600;
+      font-size:14px;
+      cursor:pointer;
+      transition:all .2s;
+      box-shadow:0 4px 16px rgba(37,99,235,.3),inset 0 1px 0 rgba(255,255,255,.1);
+      position:relative;
+      overflow:hidden;
+    }
+    button:before {
+      content:'';
+      position:absolute;
+      top:0;left:0;right:0;bottom:0;
+      background:linear-gradient(135deg,rgba(255,255,255,.1),transparent);
+      opacity:0;
+      transition:opacity .2s;
+    }
+    button:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(37,99,235,.4),inset 0 1px 0 rgba(255,255,255,.15); }
+    button:hover:before { opacity:1; }
+    button:active { transform:translateY(0); }
+    button:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+    .btn-secondary { background:linear-gradient(135deg,#1e293b,#0f172a); box-shadow:0 4px 16px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.05); }
+    .btn-secondary:hover { box-shadow:0 6px 20px rgba(15,23,42,.4),inset 0 1px 0 rgba(255,255,255,.08); }
+    .switch { position:relative; display:inline-block; width:50px; height:26px; }
+    .switch input { opacity:0; width:0; height:0; }
+    .slider {
+      position:absolute;
+      cursor:pointer;
+      top:0;left:0;right:0;bottom:0;
+      background:linear-gradient(135deg,#374151,#1f2937);
+      transition:.3s;
+      border-radius:26px;
+      border:1px solid var(--border);
+      box-shadow:inset 0 2px 4px rgba(0,0,0,.3);
+    }
+    .slider:before {
+      position:absolute;
+      content:"";
+      height:20px;
+      width:20px;
+      left:3px;
+      bottom:2px;
+      background:linear-gradient(135deg,#f3f4f6,#e5e7eb);
+      transition:.3s;
+      border-radius:50%;
+      box-shadow:0 2px 6px rgba(0,0,0,.3);
+    }
+    input:checked+.slider { background:linear-gradient(135deg,#3b82f6,#2563eb); box-shadow:0 0 12px rgba(59,130,246,.4),inset 0 2px 4px rgba(0,0,0,.2); }
+    input:checked+.slider:before { transform:translateX(24px); }
+    .code {
+      background:rgba(13,18,24,.8);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:14px;
+      color:#d8e8ff;
+      max-height:400px;
+      overflow:auto;
+      white-space:pre-wrap;
+      font-size:13px;
+      line-height:1.6;
+      box-shadow:inset 0 2px 4px rgba(0,0,0,.3);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    }
+    .code::-webkit-scrollbar { width:8px; height:8px; }
+    .code::-webkit-scrollbar-track { background:rgba(0,0,0,.2); border-radius:4px; }
+    .code::-webkit-scrollbar-thumb { background:rgba(79,143,255,.3); border-radius:4px; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+    .panel { animation:fadeIn .4s ease-out; }
+    .info-box {
+      background:rgba(79,143,255,.1);
+      border:1px solid rgba(79,143,255,.3);
+      border-radius:12px;
+      padding:16px;
+      margin-bottom:20px;
+      color:#c5d4ff;
+      font-size:14px;
+    }
+    .info-box strong { color:#4f8fff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎁 Amazon Q 账号投喂</h1>
+
+    <div class="info-box">
+      <strong>使用说明：</strong><br><br>
+      <strong>方式一：URL 登录</strong><br>
+      1. 填写账号标签（可选）<br>
+      2. 点击"开始登录"按钮，系统会自动打开授权页面<br>
+      3. 在授权页面完成登录<br>
+      4. 返回本页面，点击"等待授权并创建账号"按钮<br>
+      5. 等待最多5分钟，系统会自动创建账号并投喂到主服务<br><br>
+      <strong>方式二：手动投喂</strong><br>
+      直接在下方表单输入 clientId、clientSecret、refreshToken 即可快速投喂
+    </div>
+
+    <div class="panel">
+      <h2>URL 登录（5分钟超时）</h2>
+      <div class="row">
+        <div class="field">
+          <label>账号标签（可选）</label>
+          <input id="auth_label" placeholder="例如：张三的账号" />
+        </div>
+      </div>
+      <div class="row">
+        <button onclick="startAuth()">🚀 开始登录</button>
+        <button class="btn-secondary" onclick="claimAuth()">⏳ 等待授权并创建账号</button>
+      </div>
+      <div class="field">
+        <label>登录信息</label>
+        <pre class="code" id="auth_info">尚未开始</pre>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:20px">
+      <h2>📝 手动投喂账号</h2>
+      <div class="row">
+        <div class="field"><label>label（可选）</label><input id="manual_label" placeholder="账号标签" /></div>
+        <div class="field"><label>clientId</label><input id="manual_clientId" placeholder="客户端ID" /></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>clientSecret</label><input id="manual_clientSecret" placeholder="客户端密钥" /></div>
+        <div class="field"><label>refreshToken</label><input id="manual_refreshToken" placeholder="刷新令牌" /></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>accessToken（可选）</label><input id="manual_accessToken" placeholder="访问令牌" /></div>
+      </div>
+      <div class="row">
+        <button onclick="createSingle()">➕ 创建单个账号</button>
+      </div>
+      <div class="field">
+        <label>结果</label>
+        <pre class="code" id="manual_result">等待操作</pre>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:20px">
+      <h2>📦 批量投喂账号</h2>
+      <div class="field">
+        <label>JSON 数组（每个对象包含 label、clientId、clientSecret、refreshToken、accessToken）</label>
+        <textarea id="batch_json" style="min-height:200px;font-family:ui-monospace,monospace;background:rgba(12,16,28,.6);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:12px 14px;outline:none;resize:vertical" placeholder='[
+  {
+    "label": "账号1",
+    "clientId": "xxx",
+    "clientSecret": "xxx",
+    "refreshToken": "xxx",
+    "accessToken": ""
+  }
+]'></textarea>
+      </div>
+      <div class="row">
+        <button onclick="createBatch()">🚀 批量创建账号</button>
+      </div>
+      <div class="field">
+        <label>批量结果</label>
+        <pre class="code" id="batch_result">等待操作</pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+let currentAuth = null;
+
+async function startAuth(){
+  const body = {
+    label: (document.getElementById('auth_label').value || '').trim() || null,
+    enabled: true
+  };
+  try {
+    const r = await fetch('/auth/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    currentAuth = j;
+    const info = [
+      '✅ 授权流程已启动！',
+      '',
+      '📋 验证链接: ' + j.verificationUriComplete,
+      '🔑 用户代码: ' + (j.userCode || ''),
+      '🆔 会话ID: ' + j.authId,
+      '⏱️  过期时间: ' + j.expiresIn + '秒',
+      '🔄 轮询间隔: ' + j.interval + '秒',
+      '',
+      '👉 请在新窗口中打开上述链接完成登录。',
+      '👉 登录完成后，点击下方"等待授权并创建账号"按钮。'
+    ].join('\n');
+    const el = document.getElementById('auth_info');
+    el.textContent = info;
+    try { window.open(j.verificationUriComplete, '_blank'); } catch {}
+  } catch(e){
+    document.getElementById('auth_info').textContent = '❌ 启动失败：' + e;
+  }
+}
+
+async function claimAuth(){
+  if (!currentAuth || !currentAuth.authId) {
+    alert('⚠️ 请先点击"开始登录"按钮');
+    return;
+  }
+  const authInfo = document.getElementById('auth_info');
+  const originalText = authInfo.textContent;
+  authInfo.textContent = originalText + '\n\n⏳ 正在等待授权并创建账号（最多5分钟）...\n请耐心等待，不要关闭页面...';
+
+  try{
+    const r = await fetch('/auth/claim/' + encodeURIComponent(currentAuth.authId), { method: 'POST' });
+    if (!r.ok) {
+      const errorText = await r.text();
+      throw new Error(errorText);
+    }
+    const j = await r.json();
+
+    if (j.status === 'completed' && j.account) {
+      authInfo.textContent = '🎉 账号创建成功！账号已投喂到主服务！\n\n' +
+        '📋 账号信息：\n' +
+        '  标签：' + j.account.label + '\n' +
+        '  ID：' + j.account.id + '\n' +
+        '  状态：' + (j.account.enabled ? '✅ 已启用' : '⚠️ 已禁用') + '\n\n' +
+        '感谢您的投喂！🙏';
+
+      // 清空表单
+      document.getElementById('auth_label').value = '';
+      currentAuth = null;
+    } else {
+      authInfo.textContent = '完成：\n' + JSON.stringify(j, null, 2);
+    }
+  } catch(e){
+    authInfo.textContent = originalText + '\n\n❌ 失败：' + e.message + '\n\n请检查：\n1. 是否已在授权页面完成登录\n2. 主服务是否正常运行\n3. 网络连接是否正常';
+  }
+}
+
+async function createSingle(){
+  const label = document.getElementById('manual_label').value.trim();
+  const clientId = document.getElementById('manual_clientId').value.trim();
+  const clientSecret = document.getElementById('manual_clientSecret').value.trim();
+  const refreshToken = document.getElementById('manual_refreshToken').value.trim();
+  const accessToken = document.getElementById('manual_accessToken').value.trim();
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    alert('⚠️ 请填写必填字段：clientId、clientSecret、refreshToken');
+    return;
+  }
+
+  const result = document.getElementById('manual_result');
+  result.textContent = '⏳ 正在创建账号...';
+
+  try {
+    const r = await fetch('/accounts/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        label: label || null,
+        clientId,
+        clientSecret,
+        refreshToken,
+        accessToken: accessToken || null,
+        enabled: true
+      })
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    result.textContent = '🎉 账号创建成功！\n\n' + JSON.stringify(j, null, 2);
+
+    // 清空表单
+    document.getElementById('manual_label').value = '';
+    document.getElementById('manual_clientId').value = '';
+    document.getElementById('manual_clientSecret').value = '';
+    document.getElementById('manual_refreshToken').value = '';
+    document.getElementById('manual_accessToken').value = '';
+  } catch(e){
+    result.textContent = '❌ 创建失败：' + e.message;
+  }
+}
+
+async function createBatch(){
+  const jsonText = document.getElementById('batch_json').value.trim();
+  if (!jsonText) {
+    alert('⚠️ 请输入 JSON 数组');
+    return;
+  }
+
+  let accounts;
+  try {
+    accounts = JSON.parse(jsonText);
+    if (!Array.isArray(accounts)) throw new Error('必须是数组格式');
+  } catch(e){
+    alert('❌ JSON 格式错误：' + e.message);
+    return;
+  }
+
+  const result = document.getElementById('batch_result');
+  result.textContent = `⏳ 开始批量创建 ${accounts.length} 个账号...\n`;
+
+  try {
+    const r = await fetch('/accounts/batch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accounts })
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+
+    result.textContent = `✅ 批量创建完成！\n\n` +
+      `成功：${j.success} 个\n` +
+      `失败：${j.failed} 个\n` +
+      `总计：${j.total} 个\n\n` +
+      `详细结果：\n${JSON.stringify(j.results, null, 2)}`;
+  } catch(e){
+    result.textContent = '❌ 批量创建失败：' + e.message;
+  }
+}
+</script>
+</body>
+</html>
