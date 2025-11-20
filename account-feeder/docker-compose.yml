@@ -8,10 +8,6 @@ services:
     container_name: q2api-account-feeder
     ports:
       - "${FEEDER_PORT:-8001}:${FEEDER_PORT:-8001}"
-    environment:
-      - FEEDER_PORT=${FEEDER_PORT:-8001}
-      - API_SERVER=${API_SERVER:-http://q2api:8000}
-      - HTTP_PROXY=${HTTP_PROXY}
     env_file:
       - .env
     restart: unless-stopped
