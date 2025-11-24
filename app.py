@@ -49,11 +49,11 @@ def count_tokens(text: str, apply_multiplier: bool = False) -> int:
 
 BASE_DIR = Path(__file__).resolve().parent
 
+load_dotenv(BASE_DIR / ".env")
+
 GITSTORE_SYNC = build_gitstore_sync(BASE_DIR)
 
 SUPPORTED_MODELS = ["claude-sonnet-4.5", "claude-sonnet-4"]
-
-load_dotenv(BASE_DIR / ".env")
 
 app = FastAPI(title="v2 OpenAI-compatible Server (Amazon Q Backend)")
 
