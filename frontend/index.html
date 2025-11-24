@@ -186,17 +186,33 @@
     .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
     .tab-content { display:none; }
     .tab-content.active { display:block; }
+    .topbar { display:flex; align-items:center; gap:12px; margin-top:12px; }
+    .badges { margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .chip-btn { cursor:pointer; border:1px solid var(--border); background:var(--chip); }
+    .chip-ok { color:var(--ok); border-color:rgba(46,213,115,.4); }
+    .chip-warn { color:var(--warn); border-color:rgba(255,165,2,.4); }
+    .chip-muted { color:var(--muted); }
+    .spin { display:inline-block; width:12px; height:12px; border:2px solid rgba(255,255,255,.3); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; margin-left:6px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .log-controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Q2api 前端控制台</h1>
+    <div class="topbar">
+      <h1>Q2api 前端控制台</h1>
+      <div class="badges">
+        <div id="storage_badge" class="chip chip-muted">DB: --</div>
+        <button id="ip_badge" class="chip chip-btn" onclick="loadEgressIp(true)">IP: --</button>
+      </div>
+    </div>
 
     <div class="tabs">
       <button class="tab active" onclick="switchTab('accounts')">账号管理</button>
       <button class="tab" onclick="switchTab('create')">创建账号</button>
       <button class="tab" onclick="switchTab('login')">URL登录</button>
       <button class="tab" onclick="switchTab('chat')">Chat测试</button>
+      <button class="tab" onclick="switchTab('logs')">日志</button>
     </div>
 
     <div id="tab-accounts" class="tab-content active">
@@ -317,6 +333,33 @@
         </div>
       </div>
     </div>
+
+    <div id="tab-logs" class="tab-content">
+      <div class="panel">
+        <h2>日志查看（print 采集）</h2>
+        <div class="log-controls">
+          <div class="row" style="gap:8px; align-items:center;">
+            <label>捕获开关</label>
+            <label class="switch">
+              <input id="log_capture_toggle" type="checkbox" onchange="toggleLogCapture()" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="row" style="gap:8px; align-items:center;">
+            <label>自动刷新</label>
+            <label class="switch">
+              <input id="log_auto_toggle" type="checkbox" onchange="toggleLogAuto()" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <button class="btn-secondary" onclick="refreshLogs(true)">手动刷新</button>
+        </div>
+        <div class="field">
+          <label>实时日志（最新在下）</label>
+          <pre class="code mono" id="log_output" style="max-height:360px;"></pre>
+        </div>
+      </div>
+    </div>
   </div>
 
 
@@ -326,6 +369,11 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   event.target.classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'logs') {
+    startLogPolling();
+  } else {
+    stopLogPolling();
+  }
 }
 
 function api(path){
@@ -356,6 +404,131 @@ async function authFetch(url, options = {}) {
   }
 
   return response;
+}
+
+// Logs view
+let logLastSeq = 0;
+let logPollTimer = null;
+let logAuto = true;
+
+async function toggleLogCapture(){
+  const toggle = document.getElementById('log_capture_toggle');
+  if (!toggle) return;
+  const enabled = toggle.checked;
+  try{
+    const r = await authFetch(api('/v2/meta/logs/toggle'), {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ enabled })
+    });
+    const j = await r.json();
+    toggle.checked = !!j.enabled;
+    if (toggle.checked) {
+      startLogPolling();
+    } else {
+      stopLogPolling();
+    }
+  } catch(e){
+    alert('切换失败：' + e);
+    toggle.checked = !enabled;
+  }
+}
+
+function startLogPolling(){
+  stopLogPolling();
+  if (!logAuto) return;
+  refreshLogs();
+  logPollTimer = setInterval(refreshLogs, 2000);
+}
+
+function stopLogPolling(){
+  if (logPollTimer){
+    clearInterval(logPollTimer);
+    logPollTimer = null;
+  }
+}
+
+function toggleLogAuto(){
+  const t = document.getElementById('log_auto_toggle');
+  logAuto = t ? !!t.checked : true;
+  if (logAuto) {
+    startLogPolling();
+  } else {
+    stopLogPolling();
+  }
+}
+
+async function refreshLogs(manual=false){
+  const out = document.getElementById('log_output');
+  if (!out) return;
+  try {
+    const r = await authFetch(api(`/v2/meta/logs?after=${logLastSeq}&limit=300`));
+    const j = await r.json();
+    if (Array.isArray(j.logs)){
+      const lines = j.logs.map(e => {
+        const ts = new Date((e.ts || 0)*1000).toISOString();
+        logLastSeq = Math.max(logLastSeq, e.seq || 0);
+        return `[${ts}] ${e.text}`;
+      });
+      if (lines.length){
+        const existing = out.textContent ? out.textContent.split('\n') : [];
+        const merged = lines.concat(existing).slice(0, 2000);
+        out.textContent = merged.join('\n');
+        out.scrollTop = 0; // keep newest on top
+      }
+    }
+    const toggle = document.getElementById('log_capture_toggle');
+    if (toggle) toggle.checked = !!j.enabled;
+  } catch(e){
+    if (manual) alert('日志刷新失败：' + e);
+  }
+}
+
+async function loadStorageStatus(){
+  const el = document.getElementById('storage_badge');
+  if (!el) return;
+  el.textContent = 'DB: 加载中...';
+  try {
+    const r = await authFetch(api('/v2/meta/storage'));
+    const j = await r.json();
+    let cls = 'chip chip-muted';
+    let txt = 'DB: ' + (j.backend || '未知');
+    if ((j.backend || '').toLowerCase() === 'sqlite' && j.gitstore) {
+      const m = j.gitstore.mode || 'LOCAL';
+      txt += ' · ' + m;
+      if (j.gitstore.pending) txt += ' (pending)';
+      cls = m === 'ACTIVE' ? 'chip chip-ok' : m === 'DEGRADED' ? 'chip chip-warn' : 'chip chip-muted';
+    }
+    el.className = cls;
+    el.textContent = txt;
+  } catch (e) {
+    el.className = 'chip chip-warn';
+    el.textContent = 'DB: 获取失败';
+  }
+}
+
+async function loadEgressIp(manual=false){
+  const el = document.getElementById('ip_badge');
+  if (!el) return;
+  el.innerHTML = 'IP: 刷新中...';
+  el.removeAttribute('title');
+  try {
+    const r = await authFetch(api('/v2/meta/egress_ip'));
+    const j = await r.json();
+    let txt = 'IP: ' + (j.ip || '未知');
+    if (j.country || j.city) {
+      const loc = [j.country, j.city].filter(Boolean).join(' · ');
+      if (loc) txt += ' (' + loc + ')';
+      el.title = loc;
+    }
+    if (j.geo_pending && !(j.country || j.city)) {
+      el.innerHTML = txt + ' <span class="spin"></span>';
+    } else {
+      el.innerHTML = txt;
+    }
+  } catch (e) {
+    el.textContent = 'IP: 获取失败';
+  }
 }
 
 // Check authentication on page load - removed, combined with loadAccounts below
@@ -826,6 +999,9 @@ window.addEventListener('DOMContentLoaded', () => {
     return;
   }
   // Only load accounts if authenticated
+  loadStorageStatus();
+  loadEgressIp();
+  refreshLogs();
   loadAccounts();
 });
 </script>

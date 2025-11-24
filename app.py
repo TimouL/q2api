@@ -19,7 +19,10 @@ from dotenv import load_dotenv
 import httpx
 import tiktoken
 
-from db import init_db, close_db, row_to_dict
+from gitstore_sync import build_gitstore_sync
+from log_capture import enable_capture, disable_capture, capture_status, get_logs
+
+from db import init_db, close_db, row_to_dict, SQLiteBackend, PostgresBackend, MySQLBackend
 
 # ------------------------------------------------------------------------------
 # Tokenizer
@@ -45,6 +48,8 @@ def count_tokens(text: str, apply_multiplier: bool = False) -> int:
 # ------------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
+
+GITSTORE_SYNC = build_gitstore_sync(BASE_DIR)
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -185,6 +190,16 @@ async def _ensure_db():
     """Initialize database backend."""
     global _db
     _db = await init_db()
+
+
+def _db_backend_name() -> str:
+    if isinstance(_db, SQLiteBackend):
+        return "sqlite"
+    if isinstance(_db, PostgresBackend):
+        return "postgres"
+    if isinstance(_db, MySQLBackend):
+        return "mysql"
+    return "unknown"
 
 def _row_to_dict(r: Dict[str, Any]) -> Dict[str, Any]:
     """Convert database row to dict with JSON parsing."""
@@ -1044,6 +1059,100 @@ if CONSOLE_ENABLED:
                 message="Invalid password"
             )
 
+    @app.get("/v2/gitstore/status")
+    async def gitstore_status(_: bool = Depends(verify_admin_password)):
+        if not GITSTORE_SYNC:
+            return {"enabled": False, "mode": "LOCAL", "pending": False, "error": None}
+        st = GITSTORE_SYNC.status()
+        return {"enabled": True, "mode": st.mode, "pending": st.pending, "error": st.error}
+
+    @app.get("/v2/meta/storage")
+    async def meta_storage(_: bool = Depends(verify_admin_password)):
+        backend = _db_backend_name()
+        if backend != "sqlite":
+            return {"backend": backend, "gitstore": {"enabled": False, "mode": None, "pending": False, "error": None}}
+        if not GITSTORE_SYNC:
+            return {"backend": "sqlite", "gitstore": {"enabled": False, "mode": "LOCAL", "pending": False, "error": None}}
+        st = GITSTORE_SYNC.status()
+        return {"backend": "sqlite", "gitstore": {"enabled": True, "mode": st.mode, "pending": st.pending, "error": st.error}}
+
+    @app.post("/v2/meta/logs/toggle")
+    async def meta_logs_toggle(body: Dict[str, Any], _: bool = Depends(verify_admin_password)):
+        enabled = bool(body.get("enabled", False))
+        if enabled:
+            enable_capture()
+        else:
+            disable_capture()
+        return {"enabled": capture_status()}
+
+    @app.get("/v2/meta/logs")
+    async def meta_logs(after: int = 0, limit: int = 200, _: bool = Depends(verify_admin_password)):
+        limit = max(1, min(limit or 200, 1000))
+        entries = get_logs(after=after, limit=limit)
+        return {
+            "enabled": capture_status(),
+            "logs": [
+                {"seq": e.seq, "ts": e.ts, "text": e.text}
+                for e in entries
+            ],
+        }
+
+    @app.get("/v2/meta/egress_ip")
+    async def meta_egress_ip(_: bool = Depends(verify_admin_password)):
+        """Return egress IP with best-effort geo; always return IP if obtainable."""
+        client = GLOBAL_CLIENT
+        ip = None
+        country = None
+        city = None
+        geo_pending = False
+
+        async def _ipify(c):
+            r = await c.get("https://api.ipify.org", params={"format": "json"}, timeout=3.0)
+            r.raise_for_status()
+            return r.json().get("ip") or r.text.strip()
+
+        async def _ipapi(c):
+            r = await c.get("https://ipapi.co/json/?lang=zh-CN", timeout=3.0)
+            r.raise_for_status()
+            d = r.json()
+            return (
+                d.get("ip") or d.get("query"),
+                d.get("country_name"),
+                d.get("city"),
+            )
+
+        try:
+            if client is None:
+                async with httpx.AsyncClient(timeout=5.0) as temp:
+                    try:
+                        ip = await _ipify(temp)
+                    except Exception:
+                        pass
+                    try:
+                        ip2, country, city = await _ipapi(temp)
+                        if ip2:
+                            ip = ip or ip2
+                    except Exception:
+                        geo_pending = True if ip else False
+            else:
+                try:
+                    ip = await _ipify(client)
+                except Exception:
+                    pass
+                try:
+                    ip2, country, city = await _ipapi(client)
+                    if ip2:
+                        ip = ip or ip2
+                except Exception:
+                    geo_pending = True if ip else False
+
+            if not ip:
+                raise RuntimeError("unable to determine egress IP")
+
+            return {"ip": ip, "country": country, "city": city, "geo_pending": geo_pending}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Egress IP fetch failed: {e}")
+
     @app.get("/login", response_class=FileResponse)
     def login_page():
         """Serve the login page"""
@@ -1390,10 +1499,21 @@ async def startup_event():
     """Initialize database and start background tasks on startup."""
     await _init_global_client()
     await _ensure_db()
+    if GITSTORE_SYNC:
+        try:
+            await GITSTORE_SYNC.prepare()
+            GITSTORE_SYNC.start_background()
+        except Exception:
+            traceback.print_exc()
     asyncio.create_task(_refresh_stale_tokens())
     # asyncio.create_task(_verify_disabled_accounts_loop())
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await _close_global_client()
+    if GITSTORE_SYNC:
+        try:
+            await GITSTORE_SYNC.stop_background()
+        except Exception:
+            traceback.print_exc()
     await close_db()

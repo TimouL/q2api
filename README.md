@@ -120,7 +120,7 @@ ENABLE_CONSOLE="true"
 ADMIN_PASSWORD="admin"
 
 # 主服务端口（默认 8000）
-PORT=8000
+PORT=8099
 ```
 
 **配置要点：**
@@ -135,7 +135,7 @@ PORT=8000
 
 ```bash
 # 启动服务 (带热重载)
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app:app --host 0.0.0.0 --port 8099 --reload
 ```
 
 服务启动后，即可通过 `http://localhost:8000` 访问。该模式适用于开发，修改代码后服务会自动重启。
@@ -431,6 +431,17 @@ v2/
 | `LAZY_ACCOUNT_POOL_REFRESH_OFFSET` | Lazy 号池刷新偏移量 | `10` | `20` |
 | `LAZY_ACCOUNT_POOL_ORDER_BY` | Lazy 号池排序字段 | `"created_at"` | `"success_count"` |
 | `LAZY_ACCOUNT_POOL_ORDER_DESC` | Lazy 号池是否降序 | `"false"` | `"true"` |
+| `GITSTORE_GIT_URL` | （仅 SQLite）Git 持久化仓库 URL，留空则禁用 | 空 | `"https://github.com/xxx/gitstore"` |
+| `GITSTORE_GIT_USERNAME` | Git 用户名，用于 GIT_ASKPASS | 空 | `"bot"` |
+| `GITSTORE_GIT_TOKEN` | Git 访问令牌（仅同步 data.sqlite3，建议最小权限） | 空 | `"ghp_xxx"` |
+| `GITSTORE_GIT_BRANCH` | GitStore 分支 | `"main"` | `"gitstore"` |
+| `GITSTORE_GIT_EMAIL` | Git 提交邮箱 | `{username}@localhost` | `"bot@example.com"` |
+
+### GitStore 持久化（仅 SQLite 模式）
+
+- 仅当 `DATABASE_URL` 为空（使用本地 SQLite）且配置了 `GITSTORE_GIT_URL/USERNAME/TOKEN` 时启用。
+- 工作区：`data/gitstore/`；会将 `data.sqlite3` 备份到此目录并单提交强推（保持单一历史）。
+- 状态查询：`GET /v2/meta/storage`（返回 backend 与 gitstore 模式），前端右上角徽标可见；GitStore ACTIVE 表示已同步，DEGRADED 表示待重试，LOCAL 表示未启用。
 
 ### 数据库结构
 
