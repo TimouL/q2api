@@ -52,8 +52,7 @@ class GitStoreSQLiteSync:
         self.git_url = os.getenv("GITSTORE_GIT_URL", "").strip()
         self.git_username = os.getenv("GITSTORE_GIT_USERNAME", "").strip()
         self.git_token = os.getenv("GITSTORE_GIT_TOKEN", "").strip()
-        self.git_email = os.getenv("GITSTORE_GIT_EMAIL", f"{self.git_username or 'gitstore'}@localhost").strip()
-        self.branch = os.getenv("GITSTORE_GIT_BRANCH", branch).strip() or branch
+        self.git_email = f"{self.git_username or 'gitstore'}@localhost"
 
         self.mode: str = GitStoreMode.LOCAL
         self.pending: bool = False
