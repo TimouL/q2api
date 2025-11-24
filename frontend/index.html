@@ -489,6 +489,13 @@ async function loadStorageStatus(){
       }
     }
 
+    if (git.error) {
+      txt += ' ⚠';
+      el.title = git.error;
+    } else {
+      el.removeAttribute('title');
+    }
+
     el.className = cls;
     el.textContent = txt;
   } catch (e) {

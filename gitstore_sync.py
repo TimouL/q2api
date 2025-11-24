@@ -70,6 +70,7 @@ class GitStoreSQLiteSync:
         """Prepare gitstore workspace and restore local DB if possible."""
         if not self._configured():
             self.mode = GitStoreMode.LOCAL
+            self.error = "GITSTORE_GIT_URL/GITSTORE_GIT_USERNAME/GITSTORE_GIT_TOKEN 未配置"
             return
 
         try:
