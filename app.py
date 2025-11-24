@@ -51,6 +51,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 GITSTORE_SYNC = build_gitstore_sync(BASE_DIR)
 
+SUPPORTED_MODELS = ["claude-sonnet-4.5", "claude-sonnet-4"]
+
 load_dotenv(BASE_DIR / ".env")
 
 app = FastAPI(title="v2 OpenAI-compatible Server (Amazon Q Backend)")
@@ -856,6 +858,11 @@ async def count_tokens_endpoint(req: ClaudeRequest):
     input_tokens = count_tokens(text_to_count, apply_multiplier=True)
     
     return {"input_tokens": input_tokens}
+
+@app.get("/v1/models")
+async def list_models(account: Dict[str, Any] = Depends(require_account)):
+    data = [{"id": mid, "object": "model", "owned_by": "anthropic"} for mid in SUPPORTED_MODELS]
+    return {"object": "list", "data": data}
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] = Depends(require_account)):
