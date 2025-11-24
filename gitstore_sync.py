@@ -193,7 +193,7 @@ class GitStoreSQLiteSync:
         commit_args = ["commit", "-m", message]
         if head_exists:
             commit_args = ["commit", "--amend", "-m", message, "--allow-empty"]
-        await self._run_git(commit_args, cwd=self.workdir, allow_failure=True)
+        await self._run_git(commit_args, cwd=self.workdir, allow_failure=False)
 
         push_args = ["push", "origin", f"+HEAD:{self.branch}"] if force else ["push", "origin", self.branch]
         await self._run_git(push_args, cwd=self.workdir)
