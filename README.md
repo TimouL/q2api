@@ -434,8 +434,6 @@ v2/
 | `GITSTORE_GIT_URL` | （仅 SQLite）Git 持久化仓库 URL，留空则禁用 | 空 | `"https://github.com/xxx/gitstore"` |
 | `GITSTORE_GIT_USERNAME` | Git 用户名，用于 GIT_ASKPASS | 空 | `"bot"` |
 | `GITSTORE_GIT_TOKEN` | Git 访问令牌（仅同步 data.sqlite3，建议最小权限） | 空 | `"ghp_xxx"` |
-| `GITSTORE_GIT_BRANCH` | GitStore 分支 | `"main"` | `"gitstore"` |
-| `GITSTORE_GIT_EMAIL` | Git 提交邮箱 | `{username}@localhost` | `"bot@example.com"` |
 
 ### GitStore 持久化（仅 SQLite 模式）
 
