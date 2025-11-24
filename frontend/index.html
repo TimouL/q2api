@@ -491,14 +491,23 @@ async function loadStorageStatus(){
   try {
     const r = await authFetch(api('/v2/meta/storage'));
     const j = await r.json();
+    const backend = (j.backend || '未知').toLowerCase();
+    const git = j.gitstore || {};
+
     let cls = 'chip chip-muted';
     let txt = 'DB: ' + (j.backend || '未知');
-    if ((j.backend || '').toLowerCase() === 'sqlite' && j.gitstore) {
-      const m = j.gitstore.mode || 'LOCAL';
-      txt += ' · ' + m;
-      if (j.gitstore.pending) txt += ' (pending)';
-      cls = m === 'ACTIVE' ? 'chip chip-ok' : m === 'DEGRADED' ? 'chip chip-warn' : 'chip chip-muted';
+
+    if (backend === 'sqlite') {
+      if (git.enabled) {
+        const m = git.mode || 'UNKNOWN';
+        txt += ' · gitstore ' + m;
+        if (git.pending) txt += ' (pending)';
+        cls = m === 'ACTIVE' ? 'chip chip-ok' : m === 'DEGRADED' ? 'chip chip-warn' : 'chip chip-muted';
+      } else {
+        txt += ' · 本地';
+      }
     }
+
     el.className = cls;
     el.textContent = txt;
   } catch (e) {
