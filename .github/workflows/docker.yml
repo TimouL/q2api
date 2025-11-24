@@ -12,8 +12,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_API: ${{ github.repository }}-api
-  IMAGE_FEEDER: ${{ github.repository }}-feeder
 
 jobs:
   build-and-push:
@@ -30,25 +28,25 @@ jobs:
           - service: api
             context: .
             dockerfile: ./Dockerfile
-            image: ${{ env.IMAGE_API }}
+            image: ${{ github.repository }}-api
             platform: linux/amd64
             arch: amd64
           - service: api
             context: .
             dockerfile: ./Dockerfile
-            image: ${{ env.IMAGE_API }}
+            image: ${{ github.repository }}-api
             platform: linux/arm64
             arch: arm64
           - service: feeder
             context: ./account-feeder
             dockerfile: ./account-feeder/Dockerfile
-            image: ${{ env.IMAGE_FEEDER }}
+            image: ${{ github.repository }}-feeder
             platform: linux/amd64
             arch: amd64
           - service: feeder
             context: ./account-feeder
             dockerfile: ./account-feeder/Dockerfile
-            image: ${{ env.IMAGE_FEEDER }}
+            image: ${{ github.repository }}-feeder
             platform: linux/arm64
             arch: arm64
 
@@ -101,9 +99,9 @@ jobs:
       matrix:
         include:
           - service: api
-            image: ${{ env.IMAGE_API }}
+            image: ${{ github.repository }}-api
           - service: feeder
-            image: ${{ env.IMAGE_FEEDER }}
+            image: ${{ github.repository }}-feeder
 
     steps:
       - name: Log in to Container Registry
