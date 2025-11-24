@@ -182,21 +182,25 @@ class GitStoreSQLiteSync:
         await self._run_git(["config", "user.email", self.git_email], cwd=self.workdir, allow_failure=True)
 
     async def _git_has_changes(self) -> bool:
-        code, out, _ = await self._run_git_capture(["status", "--porcelain"], cwd=self.workdir)
+        code, out, _ = await self._run_git_capture(["status", "--porcelain", "--", self.db_filename], cwd=self.workdir)
         return code == 0 and bool(out.strip())
 
     async def _git_add_commit_push(self, *, force: bool, message: str) -> None:
         await self._run_git(["add", self.db_filename], cwd=self.workdir)
 
         # Commit: amend if HEAD exists
-        head_exists = (self.workdir / ".git" / "HEAD").exists()
-        commit_args = ["commit", "-m", message]
+        head_exists = await self._has_head_commit()
+        commit_args = ["commit", "-m", message, "--allow-empty"]
         if head_exists:
             commit_args = ["commit", "--amend", "-m", message, "--allow-empty"]
         await self._run_git(commit_args, cwd=self.workdir, allow_failure=False)
 
         push_args = ["push", "origin", f"+HEAD:{self.branch}"] if force else ["push", "origin", self.branch]
         await self._run_git(push_args, cwd=self.workdir)
+
+    async def _has_head_commit(self) -> bool:
+        code = await self._run_git(["rev-parse", "--verify", "HEAD"], cwd=self.workdir, allow_failure=True)
+        return code == 0
 
     async def _run_git(self, args: list[str], *, cwd: Optional[Path] = None, allow_failure: bool = False) -> int:
         env = os.environ.copy()
@@ -249,7 +253,9 @@ class GitStoreSQLiteSync:
         if self._askpass_path and self._askpass_path.exists():
             return
         script_dir = self.workdir if self.workdir.exists() else self.base_dir
-        script_path = Path(tempfile.mkstemp(prefix="gitstore_askpass_", dir=script_dir)[1])
+        fd, tmp_path = tempfile.mkstemp(prefix="gitstore_askpass_", dir=script_dir)
+        os.close(fd)
+        script_path = Path(tmp_path)
         # GIT calls askpass twice (user then password). Return username for the first prompt and token for password.
         script_path.write_text(
             "#!/bin/sh\n"
