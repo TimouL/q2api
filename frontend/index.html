@@ -201,9 +201,28 @@
 
     <div id="tab-accounts" class="tab-content active">
       <div class="panel">
-        <h2>账号管理</h2>
+        <h2>账号管理 <span id="accountCount" style="font-size: 0.8em; color: #666;"></span></h2>
         <div class="row">
           <button class="btn-secondary" onclick="loadAccounts()">刷新列表</button>
+          <div style="margin-left: 20px;">
+            <label><input type="radio" name="accountFilter" value="all" checked onchange="loadAccounts()"> 全部</label>
+            <label style="margin-left: 10px;"><input type="radio" name="accountFilter" value="enabled" onchange="loadAccounts()"> 已启用</label>
+            <label style="margin-left: 10px;"><input type="radio" name="accountFilter" value="disabled" onchange="loadAccounts()"> 已禁用</label>
+          </div>
+          <div style="margin-left: 20px;">
+            <label>排序：
+              <select id="sortBy" onchange="loadAccounts()">
+                <option value="created_at">创建日期</option>
+                <option value="success_count">成功次数</option>
+              </select>
+            </label>
+            <label style="margin-left: 10px;">
+              <select id="sortOrder" onchange="loadAccounts()">
+                <option value="desc">降序</option>
+                <option value="asc">升序</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div class="list" id="accounts"></div>
       </div>
@@ -628,9 +647,20 @@ function renderAccounts(list){
 
 async function loadAccounts(){
   try{
-    const r = await authFetch(api('/v2/accounts'));
+    const filter = document.querySelector('input[name="accountFilter"]:checked')?.value || 'all';
+    const sortBy = document.getElementById('sortBy')?.value || 'created_at';
+    const sortOrder = document.getElementById('sortOrder')?.value || 'desc';
+    let url = '/v2/accounts?';
+    const params = [];
+    if (filter === 'enabled') params.push('enabled=true');
+    else if (filter === 'disabled') params.push('enabled=false');
+    params.push(`sort_by=${sortBy}`);
+    params.push(`sort_order=${sortOrder}`);
+    url += params.join('&');
+    const r = await authFetch(api(url));
     const j = await r.json();
-    renderAccounts(j);
+    document.getElementById('accountCount').textContent = `(${j.count})`;
+    renderAccounts(j.accounts);
   } catch(e){
     alert('加载账户失败：' + e);
   }

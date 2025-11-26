@@ -1256,9 +1256,18 @@ if CONSOLE_ENABLED:
         }
 
     @app.get("/v2/accounts")
-    async def list_accounts(_: bool = Depends(verify_admin_password)):
-        rows = await _db.fetchall("SELECT * FROM accounts ORDER BY created_at DESC")
-        return [_row_to_dict(r) for r in rows]
+    async def list_accounts(_: bool = Depends(verify_admin_password), enabled: Optional[bool] = None, sort_by: str = "created_at", sort_order: str = "desc"):
+        query = "SELECT * FROM accounts"
+        params = []
+        if enabled is not None:
+            query += " WHERE enabled=?"
+            params.append(1 if enabled else 0)
+        sort_field = "created_at" if sort_by not in ["created_at", "success_count"] else sort_by
+        order = "DESC" if sort_order.lower() == "desc" else "ASC"
+        query += f" ORDER BY {sort_field} {order}"
+        rows = await _db.fetchall(query, tuple(params) if params else ())
+        accounts = [_row_to_dict(r) for r in rows]
+        return {"accounts": accounts, "count": len(accounts)}
 
     @app.get("/v2/accounts/{account_id}")
     async def get_account_detail(account_id: str, _: bool = Depends(verify_admin_password)):
