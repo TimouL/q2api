@@ -153,7 +153,7 @@ def build_content_block_start(index: int, block_type: str = "text") -> str:
     data = {
         "type": "content_block_start",
         "index": index,
-        "content_block": {"type": block_type, "text": ""} if block_type == "text" else {"type": block_type}
+        "content_block": {"type": block_type, "text": ""} if block_type in ["text", "thinking"] else {"type": block_type}
     }
     return _sse_format("content_block_start", data)
 

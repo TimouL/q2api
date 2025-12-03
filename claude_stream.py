@@ -68,7 +68,7 @@ class ClaudeStreamHandler:
         self.content_block_stop_sent: bool = False
         self.message_start_sent: bool = False
         self.conversation_id: Optional[str] = None
-        
+
         # Tool use state
         self.current_tool_use: Optional[Dict[str, Any]] = None
         self.tool_input_buffer: List[str] = []
@@ -76,6 +76,10 @@ class ClaudeStreamHandler:
         self.tool_name: Optional[str] = None
         self._processed_tool_use_ids: Set[str] = set()
         self.all_tool_inputs: List[str] = []
+
+        # Think tag state
+        self.in_think_block: bool = False
+        self.think_buffer: str = ""
 
     async def handle_event(self, event_type: str, payload: Dict[str, Any]) -> AsyncGenerator[str, None]:
         """Process a single Amazon Q event and yield Claude SSE events."""
@@ -92,24 +96,86 @@ class ClaudeStreamHandler:
         # 2. Content Block Delta (assistantResponseEvent)
         elif event_type == "assistantResponseEvent":
             content = payload.get("content", "")
-            
+
             # Close any open tool use block
             if self.current_tool_use and not self.content_block_stop_sent:
                 yield build_content_block_stop(self.content_block_index)
                 self.content_block_stop_sent = True
                 self.current_tool_use = None
 
-            # Start content block if needed
-            if not self.content_block_start_sent:
-                self.content_block_index += 1
-                yield build_content_block_start(self.content_block_index, "text")
-                self.content_block_start_sent = True
-                self.content_block_started = True
-
-            # Send delta
+            # Process content with think tag detection
             if content:
-                self.response_buffer.append(content)
-                yield build_content_block_delta(self.content_block_index, content)
+                self.think_buffer += content
+                pos = 0
+
+                while pos < len(self.think_buffer):
+                    if not self.in_think_block:
+                        # Look for <thinking> tag
+                        think_start = self.think_buffer.find("<thinking>", pos)
+                        if think_start != -1:
+                            # Send text before <thinking>
+                            before_text = self.think_buffer[pos:think_start]
+                            if before_text:
+                                if not self.content_block_start_sent:
+                                    self.content_block_index += 1
+                                    yield build_content_block_start(self.content_block_index, "text")
+                                    self.content_block_start_sent = True
+                                    self.content_block_started = True
+                                self.response_buffer.append(before_text)
+                                yield build_content_block_delta(self.content_block_index, before_text)
+
+                            # Close text block and start thinking block
+                            if self.content_block_start_sent:
+                                yield build_content_block_stop(self.content_block_index)
+                                self.content_block_stop_sent = True
+                                self.content_block_start_sent = False
+
+                            self.content_block_index += 1
+                            yield build_content_block_start(self.content_block_index, "thinking")
+                            self.content_block_start_sent = True
+                            self.content_block_started = True
+                            self.content_block_stop_sent = False
+                            self.in_think_block = True
+                            pos = think_start + 7  # Skip <thinking>
+                        else:
+                            # No <thinking> found, send remaining as text
+                            remaining = self.think_buffer[pos:]
+                            if not self.content_block_start_sent:
+                                self.content_block_index += 1
+                                yield build_content_block_start(self.content_block_index, "text")
+                                self.content_block_start_sent = True
+                                self.content_block_started = True
+                            self.response_buffer.append(remaining)
+                            yield build_content_block_delta(self.content_block_index, remaining)
+                            self.think_buffer = ""
+                            break
+                    else:
+                        # Look for </thinking> tag
+                        think_end = self.think_buffer.find("</thinking>", pos)
+                        if think_end != -1:
+                            # Send thinking content
+                            thinking_text = self.think_buffer[pos:think_end]
+                            if thinking_text:
+                                yield build_content_block_delta(self.content_block_index, thinking_text)
+
+                            # Close thinking block
+                            yield build_content_block_stop(self.content_block_index)
+                            self.content_block_stop_sent = True
+                            self.content_block_start_sent = False
+                            self.in_think_block = False
+                            pos = think_end + 8  # Skip </thinking>
+                        else:
+                            # No </thinking> yet, send as thinking
+                            remaining = self.think_buffer[pos:]
+                            yield build_content_block_delta(self.content_block_index, remaining)
+                            self.think_buffer = ""
+                            break
+
+                # Keep unprocessed content in buffer
+                if pos < len(self.think_buffer):
+                    self.think_buffer = self.think_buffer[pos:]
+                else:
+                    self.think_buffer = ""
 
         # 3. Tool Use (toolUseEvent)
         elif event_type == "toolUseEvent":
