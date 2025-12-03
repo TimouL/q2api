@@ -17,6 +17,9 @@ try:
 except Exception:
     ENCODING = None
 
+THINKING_START_TAG = "<thinking>"
+THINKING_END_TAG = "</thinking>"
+
 def count_tokens(text: str) -> int:
     """Counts tokens with tiktoken."""
     if not text or not ENCODING:
@@ -111,7 +114,7 @@ class ClaudeStreamHandler:
                 while pos < len(self.think_buffer):
                     if not self.in_think_block:
                         # Look for <thinking> tag
-                        think_start = self.think_buffer.find("<thinking>", pos)
+                        think_start = self.think_buffer.find(THINKING_START_TAG, pos)
                         if think_start != -1:
                             # Send text before <thinking>
                             before_text = self.think_buffer[pos:think_start]
@@ -136,7 +139,7 @@ class ClaudeStreamHandler:
                             self.content_block_started = True
                             self.content_block_stop_sent = False
                             self.in_think_block = True
-                            pos = think_start + 10  # Skip <thinking>
+                            pos = think_start + len(THINKING_START_TAG)
                         else:
                             # No <thinking> found, send remaining as text
                             remaining = self.think_buffer[pos:]
@@ -151,7 +154,7 @@ class ClaudeStreamHandler:
                             break
                     else:
                         # Look for </thinking> tag
-                        think_end = self.think_buffer.find("</thinking>", pos)
+                        think_end = self.think_buffer.find(THINKING_END_TAG, pos)
                         if think_end != -1:
                             # Send thinking content
                             thinking_text = self.think_buffer[pos:think_end]
@@ -163,7 +166,7 @@ class ClaudeStreamHandler:
                             self.content_block_stop_sent = True
                             self.content_block_start_sent = False
                             self.in_think_block = False
-                            pos = think_end + 11  # Skip </thinking>
+                            pos = think_end + len(THINKING_END_TAG)
                         else:
                             # No </thinking> yet, send as thinking
                             remaining = self.think_buffer[pos:]
