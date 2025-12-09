@@ -1,6 +1,5 @@
 import os
 import json
-import traceback
 import uuid
 import time
 import asyncio
@@ -11,10 +10,19 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, List, Any, AsyncGenerator, Tuple
 
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("q2api")
 from dotenv import load_dotenv
 import httpx
 import tiktoken
@@ -57,6 +65,75 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ------------------------------------------------------------------------------
+# Global Exception Handlers
+# ------------------------------------------------------------------------------
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Global exception handler to catch unhandled exceptions and return 500 with details.
+    This prevents the server from returning generic 500 errors without context.
+    """
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {type(exc).__name__}: {str(exc)}", exc_info=True)
+
+    # Check for specific exception types that should return different status codes
+    if isinstance(exc, httpx.TimeoutException):
+        return JSONResponse(
+            status_code=504,
+            content={"detail": f"Upstream timeout: {str(exc)}", "error_type": "timeout"}
+        )
+    elif isinstance(exc, httpx.ConnectError):
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Connection error to upstream: {str(exc)}", "error_type": "connection_error"}
+        )
+    elif isinstance(exc, httpx.HTTPError):
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Upstream HTTP error: {str(exc)}", "error_type": "upstream_error"}
+        )
+    elif isinstance(exc, asyncio.TimeoutError):
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Request timed out", "error_type": "timeout"}
+        )
+    elif isinstance(exc, (ConnectionError, ConnectionResetError, BrokenPipeError)):
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Connection error: {str(exc)}", "error_type": "connection_error"}
+        )
+
+    # Generic 500 error with more context
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"Internal server error: {type(exc).__name__}: {str(exc)}",
+            "error_type": "internal_error"
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle request validation errors with better messages."""
+    logger.warning(f"Validation error on {request.method} {request.url.path}: {exc.errors()}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "error_type": "validation_error"}
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Log HTTP exceptions for debugging."""
+    if exc.status_code >= 500:
+        logger.error(f"HTTP {exc.status_code} on {request.method} {request.url.path}: {exc.detail}")
+    elif exc.status_code >= 400:
+        logger.warning(f"HTTP {exc.status_code} on {request.method} {request.url.path}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
 
 # ------------------------------------------------------------------------------
 # Dynamic import of replicate.py to avoid package __init__ needs
@@ -119,8 +196,7 @@ try:
     convert_claude_to_amazonq_request = _claude_converter.convert_claude_to_amazonq_request
     ClaudeStreamHandler = _claude_stream.ClaudeStreamHandler
 except Exception as e:
-    print(f"Failed to load Claude modules: {e}")
-    traceback.print_exc()
+    logger.error(f"Failed to load Claude modules: {e}", exc_info=True)
     # Define dummy classes to avoid NameError on startup if loading fails
     class ClaudeRequest(BaseModel):
         pass
@@ -230,12 +306,12 @@ async def _refresh_stale_tokens():
                 if should_refresh:
                     try:
                         await refresh_access_token_in_db(acc_id)
-                    except Exception:
-                        traceback.print_exc()
+                    except Exception as e:
+                        logger.warning(f"Background token refresh failed for account {acc_id}: {e}")
                         # Ignore per-account refresh failure; timestamp/status are recorded inside
                         pass
-        except Exception:
-            traceback.print_exc()
+        except Exception as e:
+            logger.error(f"Error in background token refresh loop: {e}", exc_info=True)
             pass
 
 # ------------------------------------------------------------------------------
@@ -399,7 +475,7 @@ def _oidc_headers() -> Dict[str, str]:
         "amz-sdk-invocation-id": str(uuid.uuid4()),
     }
 
-async def refresh_access_token_in_db(account_id: str) -> Dict[str, Any]:
+async def refresh_access_token_in_db(account_id: str, max_retries: int = 3) -> Dict[str, Any]:
     row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -415,65 +491,78 @@ async def refresh_access_token_in_db(account_id: str) -> Dict[str, Any]:
         "refreshToken": acc["refreshToken"],
     }
 
-    try:
-        # Use global client if available, else fallback (though global should be ready)
-        client = GLOBAL_CLIENT
-        if not client:
-            # Fallback for safety
-            async with httpx.AsyncClient(timeout=60.0) as temp_client:
-                r = await temp_client.post(TOKEN_URL, headers=_oidc_headers(), json=payload)
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            # Use global client if available, else fallback (though global should be ready)
+            client = GLOBAL_CLIENT
+            if not client:
+                # Fallback for safety
+                async with httpx.AsyncClient(timeout=60.0) as temp_client:
+                    r = await temp_client.post(TOKEN_URL, headers=_oidc_headers(), json=payload)
+                    r.raise_for_status()
+                    data = r.json()
+            else:
+                r = await client.post(TOKEN_URL, headers=_oidc_headers(), json=payload)
                 r.raise_for_status()
                 data = r.json()
-        else:
-            r = await client.post(TOKEN_URL, headers=_oidc_headers(), json=payload)
-            r.raise_for_status()
-            data = r.json()
 
-        new_access = data.get("accessToken")
-        new_refresh = data.get("refreshToken", acc.get("refreshToken"))
-        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        status = "success"
-    except httpx.HTTPError as e:
-        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        status = "failed"
-        await _db.execute(
-            """
-            UPDATE accounts
-            SET last_refresh_time=?, last_refresh_status=?, updated_at=?
-            WHERE id=?
-            """,
-            (now, status, now, account_id),
-        )
-        # 记录刷新失败次数
-        await _update_stats(account_id, False)
-        raise HTTPException(status_code=502, detail=f"Token refresh failed: {str(e)}")
-    except Exception as e:
-        # Ensure last_refresh_time is recorded even on unexpected errors
-        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        status = "failed"
-        await _db.execute(
-            """
-            UPDATE accounts
-            SET last_refresh_time=?, last_refresh_status=?, updated_at=?
-            WHERE id=?
-            """,
-            (now, status, now, account_id),
-        )
-        # 记录刷新失败次数
-        await _update_stats(account_id, False)
-        raise
+            new_access = data.get("accessToken")
+            new_refresh = data.get("refreshToken", acc.get("refreshToken"))
+            now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+            status = "success"
 
+            # Success - update database and return
+            await _db.execute(
+                """
+                UPDATE accounts
+                SET accessToken=?, refreshToken=?, last_refresh_time=?, last_refresh_status=?, updated_at=?
+                WHERE id=?
+                """,
+                (new_access, new_refresh, now, status, now, account_id),
+            )
+            row2 = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
+            return _row_to_dict(row2)
+
+        except httpx.TimeoutException as e:
+            last_error = e
+            logger.warning(f"Token refresh timeout for account {account_id}, attempt {attempt + 1}/{max_retries}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
+                continue
+        except httpx.HTTPError as e:
+            last_error = e
+            # Check if it's a client error (4xx) - don't retry those
+            if hasattr(e, 'response') and e.response is not None and 400 <= e.response.status_code < 500:
+                logger.error(f"Token refresh client error for account {account_id}: {e}")
+                break  # Don't retry client errors
+            logger.warning(f"Token refresh HTTP error for account {account_id}, attempt {attempt + 1}/{max_retries}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+        except Exception as e:
+            last_error = e
+            logger.error(f"Token refresh unexpected error for account {account_id}, attempt {attempt + 1}/{max_retries}: {type(e).__name__}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+
+    # All retries failed - update database and raise
+    now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    status = "failed"
     await _db.execute(
         """
         UPDATE accounts
-        SET accessToken=?, refreshToken=?, last_refresh_time=?, last_refresh_status=?, updated_at=?
+        SET last_refresh_time=?, last_refresh_status=?, updated_at=?
         WHERE id=?
         """,
-        (new_access, new_refresh, now, status, now, account_id),
+        (now, status, now, account_id),
     )
+    await _update_stats(account_id, False)
 
-    row2 = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
-    return _row_to_dict(row2)
+    error_msg = f"Token refresh failed after {max_retries} attempts: {str(last_error)}"
+    logger.error(f"Account {account_id}: {error_msg}")
+    raise HTTPException(status_code=502, detail=error_msg)
 
 async def get_account(account_id: str) -> Dict[str, Any]:
     row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
@@ -570,7 +659,7 @@ async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(
     try:
         aq_request = convert_claude_to_amazonq_request(req)
     except Exception as e:
-        traceback.print_exc()
+        logger.error(f"Request conversion failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
 
     # 2. Send upstream
@@ -773,9 +862,9 @@ async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(
                 except json.JSONDecodeError:
                     # Ignore lines that are not valid JSON
                     pass
-                except Exception:
+                except Exception as e:
                     # Broad exception to prevent accumulator from crashing on one bad event
-                    traceback.print_exc()
+                    logger.warning(f"Error processing SSE event in non-streaming accumulator: {e}", exc_info=True)
                     pass
 
             # Final assembly
@@ -1209,8 +1298,7 @@ if CONSOLE_ENABLED:
                     other_dict['failedReason'] = fail_reason
                     await _db.execute("UPDATE accounts SET other=?, updated_at=? WHERE id=?", (json.dumps(other_dict, ensure_ascii=False), now, acc_id))
             except Exception as e:
-                print(f"Error verifying account {acc_id}: {e}")
-                traceback.print_exc()
+                logger.error(f"Error verifying account {acc_id}: {e}", exc_info=True)
 
     @app.post("/v2/accounts/feed")
     async def create_accounts_feed(request: BatchAccountCreate, _: bool = Depends(verify_admin_password)):

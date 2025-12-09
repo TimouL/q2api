@@ -10,11 +10,14 @@ import os
 import json
 import time
 import asyncio
+import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from abc import ABC, abstractmethod
 
 import aiosqlite
+
+logger = logging.getLogger("q2api.db")
 
 # Optional imports for other backends
 try:
@@ -113,21 +116,46 @@ class SQLiteBackend(DatabaseBackend):
         self._initialized = False
 
     async def execute(self, query: str, params: tuple = ()) -> int:
-        cursor = await self._conn.execute(query, params)
-        await self._conn.commit()
-        return cursor.rowcount
+        try:
+            cursor = await self._conn.execute(query, params)
+            await self._conn.commit()
+            return cursor.rowcount
+        except aiosqlite.OperationalError as e:
+            logger.error(f"SQLite operational error: {e}", exc_info=True)
+            # Try to reconnect on database locked or connection issues
+            if "database is locked" in str(e).lower() or "disk I/O error" in str(e).lower():
+                logger.info("Attempting to reconnect to SQLite database...")
+                try:
+                    await self._conn.close()
+                    self._conn = await aiosqlite.connect(self._db_path)
+                    await self._conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = await self._conn.execute(query, params)
+                    await self._conn.commit()
+                    return cursor.rowcount
+                except Exception as reconnect_error:
+                    logger.error(f"Failed to reconnect to SQLite: {reconnect_error}")
+                    raise
+            raise
 
     async def fetchone(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
-        self._conn.row_factory = aiosqlite.Row
-        async with self._conn.execute(query, params) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+        try:
+            self._conn.row_factory = aiosqlite.Row
+            async with self._conn.execute(query, params) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+        except aiosqlite.OperationalError as e:
+            logger.error(f"SQLite fetchone error: {e}", exc_info=True)
+            raise
 
     async def fetchall(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        self._conn.row_factory = aiosqlite.Row
-        async with self._conn.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+        try:
+            self._conn.row_factory = aiosqlite.Row
+            async with self._conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+        except aiosqlite.OperationalError as e:
+            logger.error(f"SQLite fetchall error: {e}", exc_info=True)
+            raise
 
 
 class PostgresBackend(DatabaseBackend):

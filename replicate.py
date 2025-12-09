@@ -3,11 +3,14 @@ import uuid
 import os
 import asyncio
 import weakref
+import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Iterator, List, AsyncGenerator, Any
 import struct
 import httpx
 import importlib.util
+
+logger = logging.getLogger("q2api.replicate")
 
 def _load_claude_parser():
     """Dynamically load claude_parser module."""
@@ -273,7 +276,21 @@ async def send_chat_request(
             await resp.aclose()
             if local_client:
                 await client.aclose()
-            raise httpx.HTTPError(f"Upstream error {resp.status_code}: {err}")
+
+            # Log detailed error information
+            logger.error(f"Upstream API error: status={resp.status_code}, error={err[:500] if err else 'unknown'}")
+
+            # Provide more specific error messages based on status code
+            if resp.status_code == 401:
+                raise httpx.HTTPError(f"Upstream authentication failed (401): Access token may be expired or invalid")
+            elif resp.status_code == 403:
+                raise httpx.HTTPError(f"Upstream access denied (403): Account may be disabled or rate limited")
+            elif resp.status_code == 429:
+                raise httpx.HTTPError(f"Upstream rate limit exceeded (429): Too many requests")
+            elif resp.status_code >= 500:
+                raise httpx.HTTPError(f"Upstream server error ({resp.status_code}): {err[:200] if err else 'Service unavailable'}")
+            else:
+                raise httpx.HTTPError(f"Upstream error {resp.status_code}: {err[:200] if err else 'Unknown error'}")
         
         parser = AwsEventStreamParser()
         tracker = StreamTracker()
@@ -313,8 +330,17 @@ async def send_chat_request(
                                 yield (event_type, parsed)
             except GeneratorExit:
                 # Client disconnected - ensure cleanup without re-raising
+                logger.debug("Client disconnected during stream iteration")
                 pass
-            except Exception:
+            except httpx.ReadTimeout as e:
+                logger.warning(f"Read timeout during stream iteration: {e}")
+                if not tracker.has_content:
+                    raise
+            except httpx.ConnectError as e:
+                logger.error(f"Connection error during stream iteration: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Error during stream iteration: {type(e).__name__}: {e}")
                 if not tracker.has_content:
                     raise
             finally:
@@ -410,8 +436,23 @@ async def send_chat_request(
                         await client.aclose()
             return "".join(buf), None, tracker, None
 
-    except Exception:
+    except httpx.TimeoutException as e:
+        logger.error(f"Timeout connecting to upstream API: {e}")
+        if resp and not resp.is_closed:
+            await resp.aclose()
+        if local_client and client:
+            await client.aclose()
+        raise
+    except httpx.ConnectError as e:
+        logger.error(f"Failed to connect to upstream API: {e}")
+        if resp and not resp.is_closed:
+            await resp.aclose()
+        if local_client and client:
+            await client.aclose()
+        raise
+    except Exception as e:
         # Critical: close response on any exception before generators are created
+        logger.error(f"Unexpected error in send_chat_request: {type(e).__name__}: {e}")
         if resp and not resp.is_closed:
             await resp.aclose()
         if local_client and client:
