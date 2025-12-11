@@ -20,6 +20,8 @@ from typing import Optional
 
 
 GIT_TIMEOUT = 60  # seconds
+GIT_MAX_RETRIES = 3  # max retry attempts for transient errors
+GIT_RETRY_DELAY = 1.0  # base delay in seconds for exponential backoff
 
 
 class GitStoreMode:
@@ -59,6 +61,7 @@ class GitStoreSQLiteSync:
         self.error: Optional[str] = None
         self._task: Optional[asyncio.Task] = None
         self._askpass_path: Optional[Path] = None
+        self._lock: asyncio.Lock = asyncio.Lock()
 
     def _configured(self) -> bool:
         return bool(self.git_url and self.git_username and self.git_token)
@@ -73,6 +76,11 @@ class GitStoreSQLiteSync:
             self.error = "GITSTORE_GIT_URL/GITSTORE_GIT_USERNAME/GITSTORE_GIT_TOKEN 未配置"
             return
 
+        async with self._lock:
+            await self._prepare_locked()
+
+    async def _prepare_locked(self) -> None:
+        """Internal prepare logic, must be called with lock held."""
         try:
             self.mirror_dir.mkdir(parents=True, exist_ok=True)
             self.workdir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +119,31 @@ class GitStoreSQLiteSync:
                 pass
             self._task = None
 
+    async def reconnect(self) -> bool:
+        """Manually attempt to reconnect and recover from DEGRADED state.
+        
+        Returns True if recovery was successful, False otherwise.
+        Can be called when user clicks the status badge to retry connection.
+        """
+        if self.mode == GitStoreMode.LOCAL:
+            if not self._configured():
+                return False
+            await self.prepare()
+            return self.mode == GitStoreMode.ACTIVE
+
+        try:
+            async with self._lock:
+                await self._ensure_repo()
+                await self._checkout_branch()
+                await self._pull_latest()
+                await self._snapshot_and_push_locked()
+            return self.mode == GitStoreMode.ACTIVE
+        except Exception as exc:
+            self.mode = GitStoreMode.DEGRADED
+            self.pending = True
+            self.error = f"reconnect failed: {exc}"
+            return False
+
     async def _loop(self) -> None:
         while True:
             try:
@@ -125,6 +158,11 @@ class GitStoreSQLiteSync:
         if self.mode == GitStoreMode.LOCAL:
             return
 
+        async with self._lock:
+            await self._snapshot_and_push_locked()
+
+    async def _snapshot_and_push_locked(self) -> None:
+        """Internal snapshot logic, must be called with lock held."""
         try:
             self._backup_sqlite(self.local_db_path, self.git_db_path)
         except Exception as exc:
@@ -135,12 +173,13 @@ class GitStoreSQLiteSync:
 
         changed = await self._git_has_changes()
         if not changed:
+            self.mode = GitStoreMode.ACTIVE
             self.pending = False
             self.error = None
             return
 
         try:
-            await self._git_add_commit_push(force=True, message="chore: sync sqlite snapshot")
+            await self._git_add_commit_push_with_retry(force=True, message="chore: sync sqlite snapshot")
             self.mode = GitStoreMode.ACTIVE
             self.pending = False
             self.error = None
@@ -198,6 +237,50 @@ class GitStoreSQLiteSync:
 
         push_args = ["push", "origin", f"+HEAD:{self.branch}"] if force else ["push", "origin", self.branch]
         await self._run_git(push_args, cwd=self.workdir)
+
+    async def _git_add_commit_push_with_retry(self, *, force: bool, message: str) -> None:
+        """Wrapper with retry and backoff for transient errors."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(GIT_MAX_RETRIES):
+            try:
+                await self._git_add_commit_push(force=force, message=message)
+                return
+            except RuntimeError as exc:
+                last_exc = exc
+                error_msg = str(exc).lower()
+                if self._is_ignorable_git_error(error_msg):
+                    return
+                if not self._is_transient_git_error(error_msg):
+                    raise
+                if attempt < GIT_MAX_RETRIES - 1:
+                    await asyncio.sleep(GIT_RETRY_DELAY * (2 ** attempt))
+        if last_exc:
+            raise last_exc
+
+    def _is_transient_git_error(self, error_msg: str) -> bool:
+        """Check if error is likely transient and worth retrying."""
+        transient_patterns = [
+            "connection timed out",
+            "connection refused",
+            "connection reset",
+            "failed to connect",
+            "temporary failure",
+            "network is unreachable",
+            "could not resolve host",
+            "ssl",
+            "502", "503", "504",
+        ]
+        return any(p in error_msg for p in transient_patterns)
+
+    def _is_ignorable_git_error(self, error_msg: str) -> bool:
+        """Check if error can be safely ignored (operation already done, etc.)."""
+        ignorable_patterns = [
+            "nothing to commit",
+            "everything up-to-date",
+            "already up to date",
+            "no changes added to commit",
+        ]
+        return any(p in error_msg for p in ignorable_patterns)
 
     async def _has_head_commit(self) -> bool:
         code = await self._run_git(["rev-parse", "--verify", "HEAD"], cwd=self.workdir, allow_failure=True)

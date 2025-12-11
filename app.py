@@ -1073,6 +1073,15 @@ if CONSOLE_ENABLED:
         st = GITSTORE_SYNC.status()
         return {"enabled": True, "mode": st.mode, "pending": st.pending, "error": st.error}
 
+    @app.post("/v2/gitstore/reconnect")
+    async def gitstore_reconnect(_: bool = Depends(verify_admin_password)):
+        """Manually attempt to reconnect gitstore. Call this when clicking the status badge."""
+        if not GITSTORE_SYNC:
+            return {"success": False, "error": "gitstore not configured"}
+        success = await GITSTORE_SYNC.reconnect()
+        st = GITSTORE_SYNC.status()
+        return {"success": success, "mode": st.mode, "pending": st.pending, "error": st.error}
+
     @app.get("/v2/meta/storage")
     async def meta_storage(_: bool = Depends(verify_admin_password)):
         backend = _db_backend_name()
