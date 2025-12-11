@@ -298,12 +298,44 @@
     .spin { display:inline-block; width:12px; height:12px; border:2px solid rgba(255,255,255,.3); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; margin-left:6px; }
     @keyframes spin { to { transform:rotate(360deg); } }
     .log-controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+
+    /* 标题统计小卡片 */
+    .stats-mini { display:flex; gap:8px; margin-left:16px; }
+    .stat-mini {
+      display:flex;
+      align-items:center;
+      gap:4px;
+      padding:4px 10px;
+      background:rgba(20,27,40,.8);
+      border:1px solid var(--border);
+      border-radius:6px;
+      font-size:12px;
+    }
+    .stat-mini__label { color:var(--muted); }
+    .stat-mini__value { font-weight:600; font-family:ui-monospace,monospace; }
+    .stat-mini--total .stat-mini__value { color:var(--accent); }
+    .stat-mini--success .stat-mini__value { color:var(--ok); }
+    .stat-mini--error .stat-mini__value { color:var(--danger); }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="topbar">
       <h1>Q2api 前端控制台</h1>
+      <div class="stats-mini">
+        <div class="stat-mini stat-mini--total">
+          <span class="stat-mini__label">总请求</span>
+          <span class="stat-mini__value" id="stats_total">0</span>
+        </div>
+        <div class="stat-mini stat-mini--success">
+          <span class="stat-mini__label">成功</span>
+          <span class="stat-mini__value" id="stats_success">0</span>
+        </div>
+        <div class="stat-mini stat-mini--error">
+          <span class="stat-mini__label">失败</span>
+          <span class="stat-mini__value" id="stats_error">0</span>
+        </div>
+      </div>
       <div class="badges">
         <div id="storage_badge" class="chip chip-muted">DB: --</div>
         <button id="ip_badge" class="chip chip-btn" onclick="loadEgressIp(true)">IP: --</button>
@@ -1002,6 +1034,26 @@ async function send() {
   }
 }
 
+// Stats polling
+let statsPollTimer = null;
+
+async function loadStats() {
+  try {
+    const r = await authFetch(api('/v2/meta/stats'));
+    const j = await r.json();
+    document.getElementById('stats_total').textContent = j.total ?? 0;
+    document.getElementById('stats_success').textContent = j.success ?? 0;
+    document.getElementById('stats_error').textContent = j.error ?? 0;
+  } catch(e) {
+    // Silently fail
+  }
+}
+
+function startStatsPolling() {
+  loadStats();
+  statsPollTimer = setInterval(loadStats, 5000);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   // Check authentication first
   const password = getAuthPassword();
@@ -1014,6 +1066,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadEgressIp();
   refreshLogs();
   loadAccounts();
+  startStatsPolling();
 });
 </script>
 </body>

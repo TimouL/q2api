@@ -25,6 +25,28 @@ from log_capture import enable_capture, disable_capture, capture_status, get_log
 from db import init_db, close_db, row_to_dict, SQLiteBackend, PostgresBackend, MySQLBackend
 
 # ------------------------------------------------------------------------------
+# In-memory request statistics (not persisted)
+# ------------------------------------------------------------------------------
+class RequestStats:
+    def __init__(self):
+        self.total = 0
+        self.success = 0
+        self.error = 0
+    
+    def record_success(self):
+        self.total += 1
+        self.success += 1
+    
+    def record_error(self):
+        self.total += 1
+        self.error += 1
+    
+    def get(self) -> Dict[str, int]:
+        return {"total": self.total, "success": self.success, "error": self.error}
+
+REQUEST_STATS = RequestStats()
+
+# ------------------------------------------------------------------------------
 # Tokenizer
 # ------------------------------------------------------------------------------
 
@@ -543,6 +565,13 @@ async def get_account(account_id: str) -> Dict[str, Any]:
     return _row_to_dict(row)
 
 async def _update_stats(account_id: str, success: bool) -> None:
+    # Update in-memory request stats
+    if success:
+        REQUEST_STATS.record_success()
+    else:
+        REQUEST_STATS.record_error()
+    
+    # Update account stats in DB
     if success:
         await _db.execute("UPDATE accounts SET success_count=success_count+1, error_count=0, updated_at=? WHERE id=?",
                     (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), account_id))
@@ -1167,6 +1196,11 @@ if CONSOLE_ENABLED:
             return {"backend": "sqlite", "gitstore": {"enabled": False, "mode": "LOCAL", "pending": False, "error": None}}
         st = GITSTORE_SYNC.status()
         return {"backend": "sqlite", "gitstore": {"enabled": True, "mode": st.mode, "pending": st.pending, "error": st.error}}
+
+    @app.get("/v2/meta/stats")
+    async def meta_stats(_: bool = Depends(verify_admin_password)):
+        """Return in-memory request statistics (total, success, error)."""
+        return REQUEST_STATS.get()
 
     @app.post("/v2/meta/logs/toggle")
     async def meta_logs_toggle(body: Dict[str, Any], _: bool = Depends(verify_admin_password)):
