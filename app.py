@@ -20,9 +20,12 @@ import httpx
 import tiktoken
 
 from gitstore_sync import build_gitstore_sync
-from log_capture import enable_capture, disable_capture, capture_status, get_logs
+from log_capture import enable_capture, disable_capture, capture_status, get_logs, add_structured_log
 
 from db import init_db, close_db, row_to_dict, SQLiteBackend, PostgresBackend, MySQLBackend
+
+# Request logging switch (in-memory, resets on app restart)
+REQUEST_LOGGING_ENABLED = False
 
 # ------------------------------------------------------------------------------
 # In-memory request statistics (not persisted)
@@ -787,6 +790,10 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
         input_tokens = count_tokens(text_to_count, apply_multiplier=True)
         handler = ClaudeStreamHandler(model=req.model, input_tokens=input_tokens)
 
+        # Prepare request snippet for logging
+        request_snippet = text_to_count[:500] if text_to_count else "(empty)"
+        response_first_chunk = ""
+
         # Try to get the first event to ensure the connection is valid
         # This allows us to return proper HTTP error codes before starting the stream
         first_event = None
@@ -800,20 +807,49 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
             raise HTTPException(status_code=502, detail=f"Upstream error: {str(e)}")
 
         async def event_generator():
+            nonlocal response_first_chunk
             try:
                 # Process the first event we already fetched
                 if first_event:
                     event_type, payload = first_event
                     async for sse in handler.handle_event(event_type, payload):
+                        # Capture first chunk of response for logging
+                        if not response_first_chunk and "content_block_delta" in sse:
+                            try:
+                                for line in sse.split('\n'):
+                                    if line.startswith('data:'):
+                                        data = json.loads(line[5:].strip())
+                                        delta = data.get("delta", {})
+                                        if delta.get("type") == "text_delta":
+                                            response_first_chunk = delta.get("text", "")[:200]
+                                            break
+                            except Exception:
+                                pass
                         yield sse
                 
                 # Process remaining events
                 async for event_type, payload in event_iter:
                     async for sse in handler.handle_event(event_type, payload):
+                        # Capture first chunk if not yet captured
+                        if not response_first_chunk and "content_block_delta" in sse:
+                            try:
+                                for line in sse.split('\n'):
+                                    if line.startswith('data:'):
+                                        data = json.loads(line[5:].strip())
+                                        delta = data.get("delta", {})
+                                        if delta.get("type") == "text_delta":
+                                            response_first_chunk = delta.get("text", "")[:200]
+                                            break
+                            except Exception:
+                                pass
                         yield sse
                 async for sse in handler.finish():
                     yield sse
                 await _update_stats(current_account["id"], True, map_model_name(req.model))
+                # Log successful request if enabled
+                if REQUEST_LOGGING_ENABLED:
+                    log_text = f"[成功请求] Model: {map_model_name(req.model)}, IP: {client_ip}\n\n--- 请求内容 ---\n{request_snippet}\n\n--- 回复片段 ---\n{response_first_chunk or '(无内容)'}"
+                    add_structured_log(log_text, kind="request")
             except GeneratorExit:
                 # Client disconnected - update stats but don't re-raise
                 await _update_stats(current_account["id"], tracker.has_content if tracker else False, map_model_name(req.model))
@@ -1229,14 +1265,23 @@ if CONSOLE_ENABLED:
             disable_capture()
         return {"enabled": capture_status()}
 
+    @app.post("/v2/meta/logs/requests/toggle")
+    async def meta_logs_requests_toggle(body: Dict[str, Any], _: bool = Depends(verify_admin_password)):
+        """Toggle request logging (successful requests with request/response snippets)."""
+        global REQUEST_LOGGING_ENABLED
+        enabled = bool(body.get("enabled", False))
+        REQUEST_LOGGING_ENABLED = enabled
+        return {"enabled": REQUEST_LOGGING_ENABLED}
+
     @app.get("/v2/meta/logs")
     async def meta_logs(after: int = 0, limit: int = 200, _: bool = Depends(verify_admin_password)):
         limit = max(1, min(limit or 200, 1000))
         entries = get_logs(after=after, limit=limit)
         return {
             "enabled": capture_status(),
+            "request_logging_enabled": REQUEST_LOGGING_ENABLED,
             "logs": [
-                {"seq": e.seq, "ts": e.ts, "text": e.text}
+                {"seq": e.seq, "ts": e.ts, "text": e.text, "kind": e.kind}
                 for e in entries
             ],
         }

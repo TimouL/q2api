@@ -6,8 +6,8 @@ import builtins
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
-from typing import Deque, List
+from dataclasses import dataclass, field
+from typing import Deque, List, Optional, Dict, Any
 
 
 @dataclass
@@ -15,6 +15,8 @@ class LogEntry:
     seq: int
     ts: float
     text: str
+    kind: str = "log"  # "log" | "request" | "error"
+    meta: Optional[Dict[str, Any]] = field(default=None)
 
 
 class LogCapture:
@@ -44,10 +46,10 @@ class LogCapture:
         with self._lock:
             return self._enabled
 
-    def _append(self, text: str) -> None:
+    def _append(self, text: str, kind: str = "log", meta: Optional[Dict[str, Any]] = None) -> None:
         with self._lock:
             self._seq += 1
-            self._buffer.append(LogEntry(seq=self._seq, ts=time.time(), text=text))
+            self._buffer.append(LogEntry(seq=self._seq, ts=time.time(), text=text, kind=kind, meta=meta))
 
     def _patched_print(self, *args, **kwargs):  # type: ignore[override]
         text = " ".join(str(a) for a in args)
@@ -73,6 +75,10 @@ class LogCapture:
                 data = data[-limit:]
             return list(data)
 
+    def add_structured_log(self, text: str, kind: str = "log", meta: Optional[Dict[str, Any]] = None) -> None:
+        """Add a structured log entry (for request logging etc.)."""
+        self._append(text=text, kind=kind, meta=meta)
+
 
 CAPTURE = LogCapture()
 
@@ -91,3 +97,8 @@ def capture_status() -> bool:
 
 def get_logs(after: int = 0, limit: int = 200) -> List[LogEntry]:
     return CAPTURE.get_logs(after=after, limit=limit)
+
+
+def add_structured_log(text: str, kind: str = "log", meta: Optional[Dict[str, Any]] = None) -> None:
+    """Add a structured log entry (for request logging etc.)."""
+    CAPTURE.add_structured_log(text=text, kind=kind, meta=meta)
