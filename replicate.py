@@ -273,6 +273,16 @@ async def send_chat_request(
             await resp.aclose()
             if local_client:
                 await client.aclose()
+            
+            # Log detailed error info for debugging (single log entry for better display)
+            error_detail = (
+                f"[Upstream Error] Status: {resp.status_code}\n"
+                f"Response: {err}\n"
+                f"Request URL: {url}\n"
+                f"Request Body: {payload_str[:2000]}..."
+            )
+            print(error_detail)
+            
             raise httpx.HTTPStatusError(
                 f"Upstream error {resp.status_code}: {err}",
                 request=req,
