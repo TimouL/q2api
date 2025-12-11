@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, List, Any, AsyncGenerator, Tuple
 
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -578,11 +578,24 @@ def _openai_non_streaming_response(
 def _sse_format(obj: Dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP from request, considering proxy headers."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else "unknown"
+
 @app.post("/v1/messages")
-async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(require_account)):
+async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[str, Any] = Depends(require_account)):
     """
     Claude-compatible messages endpoint.
     """
+    client_ip = _get_client_ip(request)
+    print(f"[Request] IP: {client_ip}, Model: {req.model}")
+    
     # 1. Convert request
     try:
         aq_request = convert_claude_to_amazonq_request(req)
@@ -865,13 +878,16 @@ async def list_models(account: Dict[str, Any] = Depends(require_account)):
     return {"object": "list", "data": data}
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] = Depends(require_account)):
+async def chat_completions(request: Request, req: ChatCompletionRequest, account: Dict[str, Any] = Depends(require_account)):
     """
     OpenAI-compatible chat endpoint.
     - stream default False
     - messages will be converted into "{role}:\n{content}" and injected into template
     - account is chosen randomly among enabled accounts (API key is for authorization only)
     """
+    client_ip = _get_client_ip(request)
+    print(f"[Request] IP: {client_ip}, Model: {req.model}")
+    
     model = req.model
     do_stream = bool(req.stream)
 
