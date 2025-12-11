@@ -1514,13 +1514,19 @@ async def health():
 async def startup_event():
     """Initialize database and start background tasks on startup."""
     await _init_global_client()
-    await _ensure_db()
+    # GitStore 必须在 _ensure_db() 之前准备，以便从远端恢复数据
     if GITSTORE_SYNC:
         try:
+            print("[GitStore] 正在准备 GitStore...")
             await GITSTORE_SYNC.prepare()
-            GITSTORE_SYNC.start_background()
+            status = GITSTORE_SYNC.status()
+            print(f"[GitStore] 准备完成，模式: {status.mode}, 错误: {status.error}")
+            if status.mode != "LOCAL":
+                GITSTORE_SYNC.start_background()
+                print("[GitStore] 后台同步任务已启动")
         except Exception:
             traceback.print_exc()
+    await _ensure_db()
     asyncio.create_task(_refresh_stale_tokens())
     # asyncio.create_task(_verify_disabled_accounts_loop())
 
@@ -1529,6 +1535,10 @@ async def shutdown_event():
     await _close_global_client()
     if GITSTORE_SYNC:
         try:
+            # 关闭前做最后一次快照推送，避免丢失最近的变更
+            print("[GitStore] 正在执行关闭前快照推送...")
+            await GITSTORE_SYNC.snapshot_and_push()
+            print("[GitStore] 快照推送完成")
             await GITSTORE_SYNC.stop_background()
         except Exception:
             traceback.print_exc()
