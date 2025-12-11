@@ -249,7 +249,8 @@ async function startAuth(){
       '⏱️  过期时间: ' + j.expiresIn + '秒',
       '🔄 轮询间隔: ' + j.interval + '秒',
       '',
-      '👉 请在隐私窗口/无痕模式中打开上述链接完成登录（最多5分钟）。'
+      '⚠️ 重要：请务必在【隐私窗口/无痕模式】中打开上述链接！',
+      '否则可能使用浏览器缓存的旧账号登录，导致授权失败。'
     ].join('\\n');
     infoEl.textContent = info;
     try {
@@ -311,7 +312,12 @@ async function claimAuth(){
     }
   } catch(e){
     clearInterval(animInterval);
-    infoEl.textContent = baseText + '\\n\\n❌ 失败：' + e.message + '\\n\\n请检查：\\n1. 是否已在授权页面完成登录\\n2. 主服务是否正常运行\\n3. 网络连接是否正常';
+    const errMsg = String(e.message || e);
+    let hint = '\\n\\n请检查：\\n1. 是否已在授权页面完成登录\\n2. 主服务是否正常运行\\n3. 网络连接是否正常';
+    if (errMsg.includes('not found') || errMsg.includes('404')) {
+      hint = '\\n\\n可能原因：\\n1. 服务已重启，请重新点击按钮\\n2. 未在隐私窗口中打开链接，使用了缓存的旧账号\\n3. 授权会话已过期';
+    }
+    infoEl.textContent = baseText + '\\n\\n❌ 失败：' + errMsg + hint;
   }
 }
 
