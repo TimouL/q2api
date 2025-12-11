@@ -790,9 +790,8 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
         input_tokens = count_tokens(text_to_count, apply_multiplier=True)
         handler = ClaudeStreamHandler(model=req.model, input_tokens=input_tokens)
 
-        # Prepare request content for logging (full content, no truncation)
-        request_snippet = text_to_count if text_to_count else "(empty)"
-        response_first_chunk = ""
+        # For raw payload logging
+        raw_request_json = json.dumps(req.model_dump(), ensure_ascii=False, indent=2) if REQUEST_LOGGING_ENABLED else ""
 
         # Try to get the first event to ensure the connection is valid
         # This allows us to return proper HTTP error codes before starting the stream
@@ -807,48 +806,31 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
             raise HTTPException(status_code=502, detail=f"Upstream error: {str(e)}")
 
         async def event_generator():
-            nonlocal response_first_chunk
+            sse_chunks = []  # Collect SSE chunks for logging
             try:
                 # Process the first event we already fetched
                 if first_event:
                     event_type, payload = first_event
                     async for sse in handler.handle_event(event_type, payload):
-                        # Capture first chunk of response for logging
-                        if not response_first_chunk and "content_block_delta" in sse:
-                            try:
-                                for line in sse.split('\n'):
-                                    if line.startswith('data:'):
-                                        data = json.loads(line[5:].strip())
-                                        delta = data.get("delta", {})
-                                        if delta.get("type") == "text_delta":
-                                            response_first_chunk = delta.get("text", "")
-                                            break
-                            except Exception:
-                                pass
+                        if REQUEST_LOGGING_ENABLED:
+                            sse_chunks.append(sse)
                         yield sse
                 
                 # Process remaining events
                 async for event_type, payload in event_iter:
                     async for sse in handler.handle_event(event_type, payload):
-                        # Capture first chunk if not yet captured (full content, no truncation)
-                        if not response_first_chunk and "content_block_delta" in sse:
-                            try:
-                                for line in sse.split('\n'):
-                                    if line.startswith('data:'):
-                                        data = json.loads(line[5:].strip())
-                                        delta = data.get("delta", {})
-                                        if delta.get("type") == "text_delta":
-                                            response_first_chunk = delta.get("text", "")
-                                            break
-                            except Exception:
-                                pass
+                        if REQUEST_LOGGING_ENABLED:
+                            sse_chunks.append(sse)
                         yield sse
                 async for sse in handler.finish():
+                    if REQUEST_LOGGING_ENABLED:
+                        sse_chunks.append(sse)
                     yield sse
                 await _update_stats(current_account["id"], True, map_model_name(req.model))
-                # Log successful request if enabled
+                # Log successful request if enabled (raw JSON payloads)
                 if REQUEST_LOGGING_ENABLED:
-                    log_text = f"[成功请求] Model: {map_model_name(req.model)}, IP: {client_ip}\n\n--- 请求内容 ---\n{request_snippet}\n\n--- 回复片段 ---\n{response_first_chunk or '(无内容)'}"
+                    raw_response = "".join(sse_chunks)
+                    log_text = f"[成功请求] Model: {map_model_name(req.model)}, IP: {client_ip}\n\n--- 请求报文 ---\n{raw_request_json}\n\n--- 响应报文 (SSE) ---\n{raw_response}"
                     add_structured_log(log_text, kind="request")
             except GeneratorExit:
                 # Client disconnected - update stats but don't re-raise
@@ -1058,17 +1040,21 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
             
             completion_tokens = count_tokens(text or "")
             
-            # Log successful request if enabled
-            if REQUEST_LOGGING_ENABLED:
-                log_text = f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n--- 请求内容 ---\n{prompt_text}\n\n--- 回复内容 ---\n{text or '(无内容)'}"
-                add_structured_log(log_text, kind="request")
-            
-            return JSONResponse(content=_openai_non_streaming_response(
+            response_obj = _openai_non_streaming_response(
                 text or "",
                 model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens
-            ))
+            )
+            
+            # Log successful request if enabled (raw JSON payloads)
+            if REQUEST_LOGGING_ENABLED:
+                raw_request = json.dumps(req.model_dump(), ensure_ascii=False, indent=2)
+                raw_response = json.dumps(response_obj, ensure_ascii=False, indent=2)
+                log_text = f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n--- 请求报文 ---\n{raw_request}\n\n--- 响应报文 ---\n{raw_response}"
+                add_structured_log(log_text, kind="request")
+            
+            return JSONResponse(content=response_obj)
         except Exception as e:
             await _update_stats(account["id"], False, map_model_name(model))
             raise
@@ -1088,31 +1074,36 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
             
             async def event_gen() -> AsyncGenerator[str, None]:
                 completion_text = ""
+                sse_chunks = []  # Collect SSE chunks for logging
                 try:
                     # Send role first
-                    yield _sse_format({
+                    first_chunk = _sse_format({
                         "id": stream_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model_used,
                         "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                     })
+                    sse_chunks.append(first_chunk)
+                    yield first_chunk
                     
                     # Stream content
                     async for piece in it:
                         if piece:
                             completion_text += piece
-                            yield _sse_format({
+                            chunk = _sse_format({
                                 "id": stream_id,
                                 "object": "chat.completion.chunk",
                                 "created": created,
                                 "model": model_used,
                                 "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
                             })
+                            sse_chunks.append(chunk)
+                            yield chunk
                     
                     # Send stop and usage
                     completion_tokens = count_tokens(completion_text)
-                    yield _sse_format({
+                    stop_chunk = _sse_format({
                         "id": stream_id,
                         "object": "chat.completion.chunk",
                         "created": created,
@@ -1124,12 +1115,18 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                             "total_tokens": prompt_tokens + completion_tokens,
                         }
                     })
+                    sse_chunks.append(stop_chunk)
+                    yield stop_chunk
                     
-                    yield "data: [DONE]\n\n"
+                    done_chunk = "data: [DONE]\n\n"
+                    sse_chunks.append(done_chunk)
+                    yield done_chunk
                     await _update_stats(account["id"], True, map_model_name(model))
-                    # Log successful request if enabled
+                    # Log successful request if enabled (raw JSON payloads)
                     if REQUEST_LOGGING_ENABLED:
-                        log_text = f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n--- 请求内容 ---\n{prompt_text}\n\n--- 回复内容 ---\n{completion_text or '(无内容)'}"
+                        raw_request = json.dumps(req.model_dump(), ensure_ascii=False, indent=2)
+                        raw_response = "".join(sse_chunks)
+                        log_text = f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n--- 请求报文 ---\n{raw_request}\n\n--- 响应报文 (SSE) ---\n{raw_response}"
                         add_structured_log(log_text, kind="request")
                 except GeneratorExit:
                     # Client disconnected - update stats but don't re-raise
