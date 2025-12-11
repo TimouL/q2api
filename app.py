@@ -32,19 +32,58 @@ class RequestStats:
         self.total = 0
         self.success = 0
         self.error = 0
+        self.by_model: Dict[str, Dict[str, int]] = {}
     
-    def record_success(self):
+    def record_success(self, model: str = "unknown"):
         self.total += 1
         self.success += 1
+        if model not in self.by_model:
+            self.by_model[model] = {"total": 0, "success": 0, "error": 0}
+        self.by_model[model]["total"] += 1
+        self.by_model[model]["success"] += 1
     
-    def record_error(self):
+    def record_error(self, model: str = "unknown"):
         self.total += 1
         self.error += 1
+        if model not in self.by_model:
+            self.by_model[model] = {"total": 0, "success": 0, "error": 0}
+        self.by_model[model]["total"] += 1
+        self.by_model[model]["error"] += 1
     
-    def get(self) -> Dict[str, int]:
-        return {"total": self.total, "success": self.success, "error": self.error}
+    def get(self) -> Dict[str, Any]:
+        return {"total": self.total, "success": self.success, "error": self.error, "by_model": self.by_model}
 
 REQUEST_STATS = RequestStats()
+
+# ------------------------------------------------------------------------------
+# In-memory account throttle tracker (not persisted, resets on app restart)
+# ------------------------------------------------------------------------------
+class AccountThrottleTracker:
+    def __init__(self):
+        self.throttled_until: Dict[str, float] = {}  # account_id -> timestamp
+        self.error_counts: Dict[str, int] = {}  # account_id -> count
+    
+    def throttle(self, account_id: str, base_backoff: float = 30.0, max_backoff: float = 300.0) -> float:
+        """Mark account as throttled with exponential backoff. Returns backoff duration."""
+        error_count = self.error_counts.get(account_id, 0) + 1
+        self.error_counts[account_id] = error_count
+        backoff = min(base_backoff * (2 ** (error_count - 1)), max_backoff)
+        self.throttled_until[account_id] = time.time() + backoff
+        return backoff
+    
+    def is_throttled(self, account_id: str) -> bool:
+        """Check if account is currently throttled."""
+        until = self.throttled_until.get(account_id)
+        if until is None:
+            return False
+        return time.time() < until
+    
+    def clear_throttle(self, account_id: str) -> None:
+        """Clear throttle state for an account (e.g., on successful request)."""
+        self.throttled_until.pop(account_id, None)
+        self.error_counts.pop(account_id, None)
+
+THROTTLE_TRACKER = AccountThrottleTracker()
 
 # ------------------------------------------------------------------------------
 # Tokenizer
@@ -75,7 +114,7 @@ load_dotenv(BASE_DIR / ".env")
 
 GITSTORE_SYNC = build_gitstore_sync(BASE_DIR)
 
-SUPPORTED_MODELS = ["claude-sonnet-4.5", "claude-sonnet-4"]
+SUPPORTED_MODELS = ["claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.5"]
 
 app = FastAPI(title="v2 OpenAI-compatible Server (Amazon Q Backend)")
 
@@ -146,6 +185,7 @@ try:
     _claude_types, _claude_converter, _claude_stream = _load_claude_modules()
     ClaudeRequest = _claude_types.ClaudeRequest
     convert_claude_to_amazonq_request = _claude_converter.convert_claude_to_amazonq_request
+    map_model_name = _claude_converter.map_model_name
     ClaudeStreamHandler = _claude_stream.ClaudeStreamHandler
 except Exception as e:
     print(f"Failed to load Claude modules: {e}")
@@ -154,6 +194,7 @@ except Exception as e:
     class ClaudeRequest(BaseModel):
         pass
     convert_claude_to_amazonq_request = None
+    map_model_name = lambda x: x
     ClaudeStreamHandler = None
 
 # ------------------------------------------------------------------------------
@@ -294,7 +335,6 @@ def _parse_allowed_keys_env() -> List[str]:
     return keys
 
 ALLOWED_API_KEYS: List[str] = _parse_allowed_keys_env()
-MAX_ERROR_COUNT: int = int(os.getenv("MAX_ERROR_COUNT", "100"))
 TOKEN_COUNT_MULTIPLIER: float = float(os.getenv("TOKEN_COUNT_MULTIPLIER", "1.0"))
 
 # Lazy Account Pool settings
@@ -326,33 +366,34 @@ def _extract_bearer(token_header: Optional[str]) -> Optional[str]:
     return token_header.strip()
 
 async def _list_enabled_accounts(limit: Optional[int] = None, exclude_throttled: bool = True) -> List[Dict[str, Any]]:
-    now = time.time()
-    throttle_condition = f" AND (throttled_until IS NULL OR throttled_until < {now})" if exclude_throttled else ""
-    
     if LAZY_ACCOUNT_POOL_ENABLED:
         order_direction = "DESC" if LAZY_ACCOUNT_POOL_ORDER_DESC else "ASC"
-        query = f"SELECT * FROM accounts WHERE enabled=1{throttle_condition} ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction}"
+        query = f"SELECT * FROM accounts WHERE enabled=1 ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction}"
         if limit:
             query += f" LIMIT {limit}"
         rows = await _db.fetchall(query)
     else:
-        query = f"SELECT * FROM accounts WHERE enabled=1{throttle_condition} ORDER BY created_at DESC"
+        query = "SELECT * FROM accounts WHERE enabled=1 ORDER BY created_at DESC"
         if limit:
             query += f" LIMIT {limit}"
         rows = await _db.fetchall(query)
-    return [_row_to_dict(r) for r in rows]
+    
+    accounts = [_row_to_dict(r) for r in rows]
+    
+    # Filter out throttled accounts in memory
+    if exclude_throttled:
+        accounts = [a for a in accounts if not THROTTLE_TRACKER.is_throttled(a["id"])]
+    
+    return accounts
 
 async def _list_enabled_accounts_excluding(exclude_ids: List[str], limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """List enabled accounts excluding specified IDs and throttled accounts."""
-    now = time.time()
-    throttle_condition = f"(throttled_until IS NULL OR throttled_until < {now})"
-    
+    """List enabled accounts excluding specified IDs and throttled accounts (in-memory)."""
     if exclude_ids:
         placeholders = ",".join(["?" for _ in exclude_ids])
         exclude_condition = f"id NOT IN ({placeholders})"
-        where_clause = f"enabled=1 AND {throttle_condition} AND {exclude_condition}"
+        where_clause = f"enabled=1 AND {exclude_condition}"
     else:
-        where_clause = f"enabled=1 AND {throttle_condition}"
+        where_clause = "enabled=1"
     
     if LAZY_ACCOUNT_POOL_ENABLED:
         order_direction = "DESC" if LAZY_ACCOUNT_POOL_ORDER_DESC else "ASC"
@@ -365,22 +406,18 @@ async def _list_enabled_accounts_excluding(exclude_ids: List[str], limit: Option
         if limit:
             query += f" LIMIT {limit}"
         rows = await _db.fetchall(query, tuple(exclude_ids) if exclude_ids else ())
-    return [_row_to_dict(r) for r in rows]
+    
+    accounts = [_row_to_dict(r) for r in rows]
+    
+    # Filter out throttled accounts in memory
+    accounts = [a for a in accounts if not THROTTLE_TRACKER.is_throttled(a["id"])]
+    
+    return accounts
 
 async def _throttle_account(account_id: str, base_backoff: float = 30.0, max_backoff: float = 300.0) -> None:
-    """Mark account as throttled with exponential backoff."""
-    row = await _db.fetchone("SELECT error_count, throttled_until FROM accounts WHERE id=?", (account_id,))
-    if not row:
-        return
-    
-    error_count = (row.get('error_count') or 0) + 1
-    backoff = min(base_backoff * (2 ** (error_count - 1)), max_backoff)
-    throttled_until = time.time() + backoff
-    
-    await _db.execute(
-        "UPDATE accounts SET throttled_until=?, error_count=?, updated_at=? WHERE id=?",
-        (throttled_until, error_count, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), account_id)
-    )
+    """Mark account as throttled with exponential backoff (in-memory only)."""
+    backoff = THROTTLE_TRACKER.throttle(account_id, base_backoff, max_backoff)
+    error_count = THROTTLE_TRACKER.error_counts.get(account_id, 1)
     print(f"[Throttle] Account {account_id[:8]}... throttled for {backoff:.0f}s (error_count={error_count})")
 
 async def _list_disabled_accounts() -> List[Dict[str, Any]]:
@@ -527,8 +564,6 @@ async def refresh_access_token_in_db(account_id: str) -> Dict[str, Any]:
             """,
             (now, status, now, account_id),
         )
-        # 记录刷新失败次数
-        await _update_stats(account_id, False)
         raise HTTPException(status_code=502, detail=f"Token refresh failed: {str(e)}")
     except Exception as e:
         # Ensure last_refresh_time is recorded even on unexpected errors
@@ -542,8 +577,6 @@ async def refresh_access_token_in_db(account_id: str) -> Dict[str, Any]:
             """,
             (now, status, now, account_id),
         )
-        # 记录刷新失败次数
-        await _update_stats(account_id, False)
         raise
 
     await _db.execute(
@@ -564,27 +597,12 @@ async def get_account(account_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Account not found")
     return _row_to_dict(row)
 
-async def _update_stats(account_id: str, success: bool) -> None:
-    # Update in-memory request stats
+async def _update_stats(account_id: str, success: bool, model: str = "unknown") -> None:
+    # Update in-memory request stats only (resets on app restart)
     if success:
-        REQUEST_STATS.record_success()
+        REQUEST_STATS.record_success(model)
     else:
-        REQUEST_STATS.record_error()
-    
-    # Update account stats in DB
-    if success:
-        await _db.execute("UPDATE accounts SET success_count=success_count+1, error_count=0, updated_at=? WHERE id=?",
-                    (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), account_id))
-    else:
-        row = await _db.fetchone("SELECT error_count FROM accounts WHERE id=?", (account_id,))
-        if row:
-            new_count = (row['error_count'] or 0) + 1
-            if new_count >= MAX_ERROR_COUNT:
-                await _db.execute("UPDATE accounts SET error_count=?, enabled=0, updated_at=? WHERE id=?",
-                           (new_count, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), account_id))
-            else:
-                await _db.execute("UPDATE accounts SET error_count=?, updated_at=? WHERE id=?",
-                           (new_count, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), account_id))
+        REQUEST_STATS.record_error(model)
 
 # ------------------------------------------------------------------------------
 # Dependencies
@@ -735,14 +753,14 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 raise HTTPException(status_code=429, detail="All accounts rate limited: Too many requests")
             
             elif status_code == 400:
-                await _update_stats(current_account["id"], False)
+                await _update_stats(current_account["id"], False, map_model_name(req.model))
                 raise HTTPException(status_code=400, detail=f"Upstream bad request: {str(e)}")
             else:
-                await _update_stats(current_account["id"], False)
+                await _update_stats(current_account["id"], False, map_model_name(req.model))
                 raise HTTPException(status_code=502, detail=f"Upstream error {status_code}: {str(e)}")
                 
         except Exception as e:
-            await _update_stats(current_account["id"], False)
+            await _update_stats(current_account["id"], False, map_model_name(req.model))
             raise
     
     # 3. Process the stream
@@ -795,12 +813,12 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                         yield sse
                 async for sse in handler.finish():
                     yield sse
-                await _update_stats(current_account["id"], True)
+                await _update_stats(current_account["id"], True, map_model_name(req.model))
             except GeneratorExit:
                 # Client disconnected - update stats but don't re-raise
-                await _update_stats(current_account["id"], tracker.has_content if tracker else False)
+                await _update_stats(current_account["id"], tracker.has_content if tracker else False, map_model_name(req.model))
             except Exception:
-                await _update_stats(current_account["id"], False)
+                await _update_stats(current_account["id"], False, map_model_name(req.model))
                 raise
 
         if req.stream:
@@ -907,7 +925,7 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 await event_iter.aclose()
         except Exception:
             pass
-        await _update_stats(current_account["id"], False)
+        await _update_stats(current_account["id"], False, map_model_name(req.model))
         status_code = e.response.status_code
         if status_code == 429:
             await _throttle_account(current_account["id"])
@@ -923,7 +941,7 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 await event_iter.aclose()
         except Exception:
             pass
-        await _update_stats(current_account["id"], False)
+        await _update_stats(current_account["id"], False, map_model_name(req.model))
         raise
 
 @app.post("/v1/messages/count_tokens")
@@ -1000,7 +1018,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
             prompt_tokens = count_tokens(prompt_text)
 
             text, _, tracker = await _send_upstream(stream=False)
-            await _update_stats(account["id"], bool(text))
+            await _update_stats(account["id"], bool(text), map_model_name(model))
             
             completion_tokens = count_tokens(text or "")
             
@@ -1011,7 +1029,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                 completion_tokens=completion_tokens
             ))
         except Exception as e:
-            await _update_stats(account["id"], False)
+            await _update_stats(account["id"], False, map_model_name(model))
             raise
     else:
         created = int(time.time())
@@ -1067,12 +1085,12 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                     })
                     
                     yield "data: [DONE]\n\n"
-                    await _update_stats(account["id"], True)
+                    await _update_stats(account["id"], True, map_model_name(model))
                 except GeneratorExit:
                     # Client disconnected - update stats but don't re-raise
-                    await _update_stats(account["id"], tracker.has_content if tracker else False)
+                    await _update_stats(account["id"], tracker.has_content if tracker else False, map_model_name(model))
                 except Exception:
-                    await _update_stats(account["id"], tracker.has_content if tracker else False)
+                    await _update_stats(account["id"], tracker.has_content if tracker else False, map_model_name(model))
                     raise
             
             return StreamingResponse(event_gen(), media_type="text/event-stream")
@@ -1083,7 +1101,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                     await it.aclose()
             except Exception:
                 pass
-            await _update_stats(account["id"], False)
+            await _update_stats(account["id"], False, map_model_name(model))
             raise
 
 # ------------------------------------------------------------------------------
@@ -1504,7 +1522,24 @@ if CONSOLE_ENABLED:
         order = "DESC" if sort_order.lower() == "desc" else "ASC"
         query += f" ORDER BY {sort_field} {order}"
         rows = await _db.fetchall(query, tuple(params) if params else ())
-        accounts = [_row_to_dict(r) for r in rows]
+        accounts = []
+        for r in rows:
+            acc = _row_to_dict(r)
+            # Add throttle info from memory
+            acc_id = acc["id"]
+            throttle_until = THROTTLE_TRACKER.throttled_until.get(acc_id)
+            error_count = THROTTLE_TRACKER.error_counts.get(acc_id, 0)
+            if throttle_until and time.time() < throttle_until:
+                acc["throttle_info"] = {
+                    "is_throttled": True,
+                    "until": throttle_until,
+                    "remaining_seconds": int(throttle_until - time.time()),
+                    "error_count": error_count,
+                    "is_max_level": error_count >= 5  # 30s * 2^4 = 480s > 300s max, so 5 errors means max
+                }
+            else:
+                acc["throttle_info"] = {"is_throttled": False, "error_count": 0, "is_max_level": False}
+            accounts.append(acc)
         return {"accounts": accounts, "count": len(accounts)}
 
     @app.get("/v2/accounts/{account_id}")

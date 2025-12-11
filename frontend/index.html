@@ -217,7 +217,25 @@
     .stat--error .stat-value { color:var(--danger); }
 
     /* 底部按钮 */
-    .account-card__footer { display:flex; justify-content:flex-end; gap:6px; }
+    .account-card__footer { display:flex; justify-content:flex-end; gap:6px; align-items:center; }
+    
+    /* 最大退避指示灯 */
+    .throttle-indicator {
+      position:absolute;
+      bottom:10px;
+      left:12px;
+      width:8px;
+      height:8px;
+      border-radius:50%;
+      background:var(--warn);
+      animation:breathe 2s ease-in-out infinite;
+      cursor:help;
+    }
+    @keyframes breathe {
+      0%, 100% { opacity:0.4; box-shadow:0 0 4px var(--warn); }
+      50% { opacity:1; box-shadow:0 0 10px var(--warn), 0 0 20px rgba(255,165,2,.4); }
+    }
+    
     .card-btn {
       border-radius:4px;
       border:1px solid transparent;
@@ -317,6 +335,46 @@
     .stat-mini--success .stat-mini__value { color:var(--ok); }
     .stat-mini--error .stat-mini__value { color:var(--danger); }
 
+    /* 模型统计卡片行 */
+    .model-stats-row {
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin:8px 0;
+    }
+    .model-stat-card {
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:4px 12px;
+      background:rgba(20,27,40,.8);
+      border:1px solid var(--border);
+      border-radius:6px;
+      font-size:12px;
+    }
+    .model-stat-card__name {
+      font-weight:600;
+      color:var(--text);
+      max-width:120px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .model-stat-card__stats {
+      display:flex;
+      gap:8px;
+    }
+    .model-stat-card__item {
+      display:flex;
+      align-items:center;
+      gap:3px;
+    }
+    .model-stat-card__label { color:var(--muted); }
+    .model-stat-card__value { font-weight:600; font-family:ui-monospace,monospace; }
+    .model-stat-card__value--total { color:var(--accent); }
+    .model-stat-card__value--success { color:var(--ok); }
+    .model-stat-card__value--error { color:var(--danger); }
+
     /* 日志条目样式 */
     .log-list { display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow:auto; padding:4px 0; }
     .log-item {
@@ -396,6 +454,9 @@
         <button id="ip_badge" class="chip chip-btn" onclick="loadEgressIp(true)">IP: --</button>
       </div>
     </div>
+
+    <!-- 模型统计卡片区域 -->
+    <div id="model_stats_container" class="model-stats-row"></div>
 
     <div class="tabs">
       <button class="tab active" onclick="switchTab('accounts')">账号管理</button>
@@ -612,10 +673,18 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Format timestamp
+// Format timestamp to East 8 timezone (UTC+8)
 function formatLogTs(ts) {
   const d = new Date((ts || 0) * 1000);
-  return d.toISOString().replace('T', ' ').substring(0, 19);
+  // Convert to UTC+8
+  const utc8 = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+  const year = utc8.getUTCFullYear();
+  const month = String(utc8.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(utc8.getUTCDate()).padStart(2, '0');
+  const hour = String(utc8.getUTCHours()).padStart(2, '0');
+  const min = String(utc8.getUTCMinutes()).padStart(2, '0');
+  const sec = String(utc8.getUTCSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hour}:${min}:${sec}`;
 }
 
 // Create log entry element
@@ -718,8 +787,8 @@ async function refreshLogs(manual=false){
     const r = await authFetch(api(`/v2/meta/logs?after=${logLastSeq}&limit=300`));
     const j = await r.json();
     if (Array.isArray(j.logs) && j.logs.length > 0){
-      // Sort by seq descending (newest first)
-      const sorted = j.logs.slice().sort((a, b) => b.seq - a.seq);
+      // Sort by timestamp descending (millisecond precision, newest first)
+      const sorted = j.logs.slice().sort((a, b) => b.ts - a.ts);
       
       sorted.forEach(e => {
         if (logSeenSeqs.has(e.seq)) return;
@@ -955,6 +1024,14 @@ function createAccountCard(acc) {
   footer.appendChild(refreshBtn);
   footer.appendChild(delBtn);
   card.appendChild(footer);
+
+  // Throttle indicator (max level)
+  if (acc.throttle_info && acc.throttle_info.is_max_level) {
+    const indicator = document.createElement('div');
+    indicator.className = 'throttle-indicator';
+    indicator.title = '指数退避等级已达最高级别';
+    card.appendChild(indicator);
+  }
 
   return card;
 }
@@ -1199,6 +1276,40 @@ async function loadStats() {
     document.getElementById('stats_total').textContent = j.total ?? 0;
     document.getElementById('stats_success').textContent = j.success ?? 0;
     document.getElementById('stats_error').textContent = j.error ?? 0;
+    
+    // Render model stats cards (only if there's data)
+    const container = document.getElementById('model_stats_container');
+    if (container && j.by_model) {
+      const models = Object.keys(j.by_model).sort();
+      if (models.length === 0) {
+        container.innerHTML = '';
+      } else {
+        container.innerHTML = '';
+        models.forEach(model => {
+          const stats = j.by_model[model];
+          const card = document.createElement('div');
+          card.className = 'model-stat-card';
+          card.innerHTML = `
+            <span class="model-stat-card__name" title="${model}">${model}</span>
+            <div class="model-stat-card__stats">
+              <span class="model-stat-card__item">
+                <span class="model-stat-card__label">总</span>
+                <span class="model-stat-card__value model-stat-card__value--total">${stats.total ?? 0}</span>
+              </span>
+              <span class="model-stat-card__item">
+                <span class="model-stat-card__label">成功</span>
+                <span class="model-stat-card__value model-stat-card__value--success">${stats.success ?? 0}</span>
+              </span>
+              <span class="model-stat-card__item">
+                <span class="model-stat-card__label">失败</span>
+                <span class="model-stat-card__value model-stat-card__value--error">${stats.error ?? 0}</span>
+              </span>
+            </div>
+          `;
+          container.appendChild(card);
+        });
+      }
+    }
   } catch(e) {
     // Silently fail
   }
