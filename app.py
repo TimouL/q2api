@@ -1058,6 +1058,11 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
             
             completion_tokens = count_tokens(text or "")
             
+            # Log successful request if enabled
+            if REQUEST_LOGGING_ENABLED:
+                log_text = f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n--- 请求内容 ---\n{prompt_text}\n\n--- 回复内容 ---\n{text or '(无内容)'}"
+                add_structured_log(log_text, kind="request")
+            
             return JSONResponse(content=_openai_non_streaming_response(
                 text or "",
                 model,
@@ -1122,6 +1127,10 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                     
                     yield "data: [DONE]\n\n"
                     await _update_stats(account["id"], True, map_model_name(model))
+                    # Log successful request if enabled
+                    if REQUEST_LOGGING_ENABLED:
+                        log_text = f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n--- 请求内容 ---\n{prompt_text}\n\n--- 回复内容 ---\n{completion_text or '(无内容)'}"
+                        add_structured_log(log_text, kind="request")
                 except GeneratorExit:
                     # Client disconnected - update stats but don't re-raise
                     await _update_stats(account["id"], tracker.has_content if tracker else False, map_model_name(model))
