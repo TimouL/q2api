@@ -29,6 +29,11 @@ except Exception as e:
 class StreamTracker:
     def __init__(self):
         self.has_content = False
+        # Upstream request/response info for logging
+        self.upstream_url: str = ""
+        self.upstream_request_body: str = ""
+        self.upstream_status: int = 0
+        self.upstream_first_event: str = ""
     
     async def track(self, gen: AsyncGenerator[str, None]) -> AsyncGenerator[str, None]:
         async for item in gen:
@@ -292,11 +297,17 @@ async def send_chat_request(
         parser = AwsEventStreamParser()
         tracker = StreamTracker()
         
+        # Store upstream request info for logging
+        tracker.upstream_url = url
+        tracker.upstream_request_body = payload_str
+        tracker.upstream_status = resp.status_code
+        
         # Track if the response has been consumed to avoid double-close
         response_consumed = False
+        first_event_captured = False
         
         async def _iter_events() -> AsyncGenerator[Any, None]:
-            nonlocal response_consumed
+            nonlocal response_consumed, first_event_captured
             try:
                 if EventStreamParser and extract_event_info:
                     # Use proper EventStreamParser
@@ -311,6 +322,10 @@ async def send_chat_request(
                             event_type = event_info.get('event_type')
                             payload = event_info.get('payload')
                             if event_type and payload:
+                                # Capture first event for logging
+                                if not first_event_captured:
+                                    first_event_captured = True
+                                    tracker.upstream_first_event = json.dumps({"event_type": event_type, "payload": payload}, ensure_ascii=False)
                                 yield (event_type, payload)
                 else:
                     # Fallback to old parser
@@ -324,6 +339,10 @@ async def send_chat_request(
                                 event_type = None
                                 if ":event-type" in ev_headers:
                                     event_type = ev_headers[":event-type"]
+                                # Capture first event for logging
+                                if not first_event_captured:
+                                    first_event_captured = True
+                                    tracker.upstream_first_event = json.dumps({"event_type": event_type, "payload": parsed}, ensure_ascii=False)
                                 yield (event_type, parsed)
             except GeneratorExit:
                 # Client disconnected - ensure cleanup without re-raising
