@@ -790,8 +790,8 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
         input_tokens = count_tokens(text_to_count, apply_multiplier=True)
         handler = ClaudeStreamHandler(model=req.model, input_tokens=input_tokens)
 
-        # Prepare request snippet for logging
-        request_snippet = text_to_count[:500] if text_to_count else "(empty)"
+        # Prepare request content for logging (full content, no truncation)
+        request_snippet = text_to_count if text_to_count else "(empty)"
         response_first_chunk = ""
 
         # Try to get the first event to ensure the connection is valid
@@ -821,7 +821,7 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                                         data = json.loads(line[5:].strip())
                                         delta = data.get("delta", {})
                                         if delta.get("type") == "text_delta":
-                                            response_first_chunk = delta.get("text", "")[:200]
+                                            response_first_chunk = delta.get("text", "")
                                             break
                             except Exception:
                                 pass
@@ -830,7 +830,7 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 # Process remaining events
                 async for event_type, payload in event_iter:
                     async for sse in handler.handle_event(event_type, payload):
-                        # Capture first chunk if not yet captured
+                        # Capture first chunk if not yet captured (full content, no truncation)
                         if not response_first_chunk and "content_block_delta" in sse:
                             try:
                                 for line in sse.split('\n'):
@@ -838,7 +838,7 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                                         data = json.loads(line[5:].strip())
                                         delta = data.get("delta", {})
                                         if delta.get("type") == "text_delta":
-                                            response_first_chunk = delta.get("text", "")[:200]
+                                            response_first_chunk = delta.get("text", "")
                                             break
                             except Exception:
                                 pass
