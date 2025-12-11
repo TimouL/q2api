@@ -36,22 +36,34 @@ class RequestStats:
         self.success = 0
         self.error = 0
         self.by_model: Dict[str, Dict[str, int]] = {}
+        self.by_account: Dict[str, Dict[str, int]] = {}  # account_id -> {"success": x, "error": y}
     
-    def record_success(self, model: str = "unknown"):
+    def record_success(self, model: str = "unknown", account_id: str = ""):
         self.total += 1
         self.success += 1
         if model not in self.by_model:
             self.by_model[model] = {"total": 0, "success": 0, "error": 0}
         self.by_model[model]["total"] += 1
         self.by_model[model]["success"] += 1
+        if account_id:
+            if account_id not in self.by_account:
+                self.by_account[account_id] = {"success": 0, "error": 0}
+            self.by_account[account_id]["success"] += 1
     
-    def record_error(self, model: str = "unknown"):
+    def record_error(self, model: str = "unknown", account_id: str = ""):
         self.total += 1
         self.error += 1
         if model not in self.by_model:
             self.by_model[model] = {"total": 0, "success": 0, "error": 0}
         self.by_model[model]["total"] += 1
         self.by_model[model]["error"] += 1
+        if account_id:
+            if account_id not in self.by_account:
+                self.by_account[account_id] = {"success": 0, "error": 0}
+            self.by_account[account_id]["error"] += 1
+    
+    def get_account_stats(self, account_id: str) -> Dict[str, int]:
+        return self.by_account.get(account_id, {"success": 0, "error": 0})
     
     def get(self) -> Dict[str, Any]:
         return {"total": self.total, "success": self.success, "error": self.error, "by_model": self.by_model}
@@ -603,9 +615,9 @@ async def get_account(account_id: str) -> Dict[str, Any]:
 async def _update_stats(account_id: str, success: bool, model: str = "unknown") -> None:
     # Update in-memory request stats only (resets on app restart)
     if success:
-        REQUEST_STATS.record_success(model)
+        REQUEST_STATS.record_success(model, account_id)
     else:
-        REQUEST_STATS.record_error(model)
+        REQUEST_STATS.record_error(model, account_id)
 
 # ------------------------------------------------------------------------------
 # Dependencies
@@ -1573,8 +1585,14 @@ if CONSOLE_ENABLED:
         accounts = []
         for r in rows:
             acc = _row_to_dict(r)
-            # Add throttle info from memory
             acc_id = acc["id"]
+            
+            # Override with in-memory stats (resets on app restart)
+            mem_stats = REQUEST_STATS.get_account_stats(acc_id)
+            acc["success_count"] = mem_stats["success"]
+            acc["error_count"] = mem_stats["error"]
+            
+            # Add throttle info from memory
             throttle_until = THROTTLE_TRACKER.throttled_until.get(acc_id)
             error_count = THROTTLE_TRACKER.error_counts.get(acc_id, 0)
             if throttle_until and time.time() < throttle_until:
