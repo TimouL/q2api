@@ -166,8 +166,7 @@
         </div>
       </div>
       <div class="row">
-        <button onclick="startAuth()">🚀 开始登录</button>
-        <button class="btn-secondary" onclick="claimAuth()">⏳ 等待授权并创建账号</button>
+        <button onclick="startAuth()">🚀 一键登录并创建账号</button>
       </div>
       <div class="field">
         <label>登录信息</label>
@@ -225,6 +224,9 @@
 let currentAuth = null;
 
 async function startAuth(){
+  const infoEl = document.getElementById('auth_info');
+  infoEl.textContent = '🚀 正在启动登录...';
+  
   const body = {
     label: (document.getElementById('auth_label').value || '').trim() || null,
     enabled: true
@@ -247,28 +249,46 @@ async function startAuth(){
       '⏱️  过期时间: ' + j.expiresIn + '秒',
       '🔄 轮询间隔: ' + j.interval + '秒',
       '',
-      '👉 请在新窗口中打开上述链接完成登录。',
-      '👉 登录完成后，点击下方"等待授权并创建账号"按钮。'
-    ].join('\n');
-    const el = document.getElementById('auth_info');
-    el.textContent = info;
-    try { window.open(j.verificationUriComplete, '_blank'); } catch {}
+      '👉 请在隐私窗口/无痕模式中打开上述链接完成登录（最多5分钟）。'
+    ].join('\\n');
+    infoEl.textContent = info;
+    try {
+      await navigator.clipboard.writeText(j.verificationUriComplete);
+      infoEl.textContent += '\\n\\n📋 链接已复制到剪贴板！请在隐私窗口中粘贴打开。';
+    } catch {}
+    
+    // 自动进入等待授权阶段
+    await claimAuth();
   } catch(e){
-    document.getElementById('auth_info').textContent = '❌ 启动失败：' + e;
+    infoEl.textContent = '❌ 启动失败：' + e;
   }
 }
 
 async function claimAuth(){
   if (!currentAuth || !currentAuth.authId) {
-    alert('⚠️ 请先点击"开始登录"按钮');
     return;
   }
-  const authInfo = document.getElementById('auth_info');
-  const originalText = authInfo.textContent;
-  authInfo.textContent = originalText + '\n\n⏳ 正在等待授权并创建账号（最多5分钟）...\n请耐心等待，不要关闭页面...';
-
+  const infoEl = document.getElementById('auth_info');
+  const baseText = infoEl.textContent;
+  
+  // 动画效果：显示等待状态和倒计时
+  let dots = 0;
+  let seconds = 0;
+  const maxSeconds = 300;
+  const animInterval = setInterval(() => {
+    dots = (dots + 1) % 4;
+    seconds++;
+    const remaining = Math.max(0, maxSeconds - seconds);
+    const mins = Math.floor(remaining / 60);
+    const secs = remaining % 60;
+    const timeStr = mins > 0 ? mins + '分' + secs + '秒' : secs + '秒';
+    const dotsStr = '.'.repeat(dots + 1);
+    infoEl.textContent = baseText + '\\n\\n⏳ 正在等待授权' + dotsStr + ' (剩余 ' + timeStr + ')\\n请在隐私窗口中完成登录，不要关闭此页面';
+  }, 1000);
+  
   try{
     const r = await fetch('/auth/claim/' + encodeURIComponent(currentAuth.authId), { method: 'POST' });
+    clearInterval(animInterval);
     if (!r.ok) {
       const errorText = await r.text();
       throw new Error(errorText);
@@ -276,21 +296,22 @@ async function claimAuth(){
     const j = await r.json();
 
     if (j.status === 'completed' && j.account) {
-      authInfo.textContent = '🎉 账号创建成功！账号已投喂到主服务！\n\n' +
-        '📋 账号信息：\n' +
-        '  标签：' + j.account.label + '\n' +
-        '  ID：' + j.account.id + '\n' +
-        '  状态：' + (j.account.enabled ? '✅ 已启用' : '⚠️ 已禁用') + '\n\n' +
+      infoEl.textContent = '🎉 账号创建成功！账号已投喂到主服务！\\n\\n' +
+        '📋 账号信息：\\n' +
+        '  标签：' + j.account.label + '\\n' +
+        '  ID：' + j.account.id + '\\n' +
+        '  状态：' + (j.account.enabled ? '✅ 已启用' : '⚠️ 已禁用') + '\\n\\n' +
         '感谢您的投喂！🙏';
 
       // 清空表单
       document.getElementById('auth_label').value = '';
       currentAuth = null;
     } else {
-      authInfo.textContent = '完成：\n' + JSON.stringify(j, null, 2);
+      infoEl.textContent = '✅ 完成：\\n' + JSON.stringify(j, null, 2);
     }
   } catch(e){
-    authInfo.textContent = originalText + '\n\n❌ 失败：' + e.message + '\n\n请检查：\n1. 是否已在授权页面完成登录\n2. 主服务是否正常运行\n3. 网络连接是否正常';
+    clearInterval(animInterval);
+    infoEl.textContent = baseText + '\\n\\n❌ 失败：' + e.message + '\\n\\n请检查：\\n1. 是否已在授权页面完成登录\\n2. 主服务是否正常运行\\n3. 网络连接是否正常';
   }
 }
 
