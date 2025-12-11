@@ -112,25 +112,128 @@
       font-weight:500;
       box-shadow:0 2px 8px rgba(0,0,0,.2);
     }
-    .list { position:relative; max-height:600px; overflow:auto; padding:2px; }
+    .list { position:relative; max-height:75vh; overflow:auto; padding:2px; }
     .list::-webkit-scrollbar { width:8px; }
     .list::-webkit-scrollbar-track { background:rgba(0,0,0,.2); border-radius:4px; }
     .list::-webkit-scrollbar-thumb { background:rgba(79,143,255,.3); border-radius:4px; }
     .list::-webkit-scrollbar-thumb:hover { background:rgba(79,143,255,.5); }
-    .list-viewport { position:relative; }
-    .list-content { display:flex; flex-direction:column; gap:12px; }
-    .card {
-      border:1px solid var(--border);
-      border-radius:14px;
-      padding:16px;
-      background:linear-gradient(145deg,rgba(12,19,34,.6),rgba(10,14,26,.8));
+
+    /* 卡片网格布局 */
+    .account-grid {
+      display:grid;
+      grid-template-columns:repeat(4, minmax(0, 1fr));
+      gap:12px;
+      padding:12px 0;
+    }
+    @media (max-width:1400px) { .account-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
+    @media (max-width:1024px) { .account-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+    @media (max-width:640px) { .account-grid { grid-template-columns:1fr; } }
+
+    /* 卡片样式 - 16:9比例 */
+    .account-card {
+      position:relative;
       display:flex;
       flex-direction:column;
-      gap:12px;
-      box-shadow:0 4px 16px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.02);
+      gap:6px;
+      padding:10px 12px;
+      border-radius:10px;
+      border:1px solid var(--border);
+      background:linear-gradient(145deg,rgba(12,19,34,.7),rgba(10,14,26,.85));
+      box-shadow:0 2px 10px rgba(0,0,0,.3);
+      aspect-ratio:16/9;
+      box-sizing:border-box;
+      font-size:12px;
       transition:all .2s;
+      overflow:hidden;
     }
-    .card:hover { border-color:rgba(79,143,255,.3); box-shadow:0 6px 20px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.03); }
+    .account-card:hover { border-color:rgba(79,143,255,.4); box-shadow:0 4px 16px rgba(0,0,0,.4); transform:translateY(-2px); }
+    .account-card--disabled { opacity:.55; }
+
+    .account-card__header {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .account-card__title { min-width:0; flex:1; }
+    .account-label {
+      font-weight:600;
+      font-size:13px;
+      color:var(--text);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .account-id {
+      margin-top:2px;
+      font-size:10px;
+      color:var(--muted);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      font-family:ui-monospace,monospace;
+    }
+
+    /* 紧凑开关 */
+    .account-toggle {
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+      cursor:pointer;
+      font-size:10px;
+      color:var(--muted);
+      flex-shrink:0;
+    }
+    .account-toggle input { display:none; }
+    .account-toggle__slider {
+      width:28px;
+      height:14px;
+      border-radius:999px;
+      background:#374151;
+      position:relative;
+      transition:background .15s;
+    }
+    .account-toggle__slider::before {
+      content:"";
+      position:absolute;
+      top:2px;
+      left:2px;
+      width:10px;
+      height:10px;
+      border-radius:999px;
+      background:#fff;
+      transition:transform .15s;
+    }
+    .account-toggle input:checked + .account-toggle__slider { background:var(--ok); }
+    .account-toggle input:checked + .account-toggle__slider::before { transform:translateX(14px); }
+
+    /* 中间统计 */
+    .account-card__body { flex:1; display:flex; align-items:center; }
+    .account-stats { display:flex; gap:16px; }
+    .stat { display:flex; flex-direction:column; gap:1px; }
+    .stat-label { font-size:10px; color:var(--muted); }
+    .stat-value { font-weight:600; font-size:14px; }
+    .stat--success .stat-value { color:var(--ok); }
+    .stat--error .stat-value { color:var(--danger); }
+
+    /* 底部按钮 */
+    .account-card__footer { display:flex; justify-content:flex-end; gap:6px; }
+    .card-btn {
+      border-radius:4px;
+      border:1px solid transparent;
+      padding:3px 8px;
+      font-size:10px;
+      line-height:1.4;
+      cursor:pointer;
+      background:rgba(255,255,255,.08);
+      color:var(--text);
+      transition:all .15s;
+    }
+    .card-btn:hover { background:rgba(255,255,255,.15); }
+    .card-btn--warn { border-color:rgba(255,165,2,.4); color:var(--warn); }
+    .card-btn--warn:hover { background:rgba(255,165,2,.15); }
+    .card-btn--danger { border-color:rgba(255,71,87,.4); color:var(--danger); }
+    .card-btn--danger:hover { background:rgba(255,71,87,.15); }
     .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
     .code {
       background:var(--code);
@@ -574,33 +677,35 @@ async function loadEgressIp(manual=false){
 
 // Virtual scroll state
 let accountsData = [];
-let virtualScroll = null;
-
-// Create account card element
+// Create compact account card element (16:9)
 function createAccountCard(acc) {
-  const card = document.createElement('div');
-  card.className = 'card';
+  const card = document.createElement('article');
+  card.className = 'account-card' + (acc.enabled ? '' : ' account-card--disabled');
   card.dataset.accountId = acc.id;
 
-  const header = document.createElement('div');
-  header.className = 'row';
-  const name = document.createElement('div');
-  name.innerHTML = '<strong>' + (acc.label || '(无标签)') + '</strong>';
-  const id = document.createElement('div');
-  id.className = 'chip mono';
-  id.textContent = acc.id;
+  // Header: title + toggle
+  const header = document.createElement('header');
+  header.className = 'account-card__header';
 
-  const spacer = document.createElement('div');
-  spacer.className = 'right';
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'account-card__title';
+  const labelEl = document.createElement('div');
+  labelEl.className = 'account-label';
+  labelEl.textContent = acc.label || '(无标签)';
+  labelEl.title = acc.label || '';
+  const idEl = document.createElement('div');
+  idEl.className = 'account-id';
+  idEl.textContent = acc.id;
+  idEl.title = acc.id;
+  titleDiv.appendChild(labelEl);
+  titleDiv.appendChild(idEl);
 
-  // Enabled toggle
-  const toggleWrap = document.createElement('div');
-  const toggleLabel = document.createElement('label');
-  toggleLabel.style.marginRight = '6px';
-  toggleLabel.className = 'muted';
-  toggleLabel.textContent = '启用';
+  // Toggle
   const toggle = document.createElement('label');
-  toggle.className = 'switch';
+  toggle.className = 'account-toggle';
+  const toggleText = document.createElement('span');
+  toggleText.className = 'account-toggle__label';
+  toggleText.textContent = '启用';
   const chk = document.createElement('input');
   chk.type = 'checkbox';
   chk.checked = !!acc.enabled;
@@ -612,234 +717,67 @@ function createAccountCard(acc) {
     }
   };
   const slider = document.createElement('span');
-  slider.className = 'slider';
-  toggle.appendChild(chk); toggle.appendChild(slider);
-  toggleWrap.appendChild(toggleLabel); toggleWrap.appendChild(toggle);
+  slider.className = 'account-toggle__slider';
+  toggle.appendChild(toggleText);
+  toggle.appendChild(chk);
+  toggle.appendChild(slider);
 
-  const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'btn-warn';
-  refreshBtn.textContent = '刷新Token';
-  refreshBtn.onclick = () => refreshAccount(acc.id);
-
-  const delBtn = document.createElement('button');
-  delBtn.className = 'btn-danger';
-  delBtn.textContent = '删除';
-  delBtn.onclick = () => deleteAccount(acc.id);
-
-  header.appendChild(name);
-  header.appendChild(id);
-  header.appendChild(spacer);
-  header.appendChild(toggleWrap);
-  header.appendChild(refreshBtn);
-  header.appendChild(delBtn);
+  header.appendChild(titleDiv);
+  header.appendChild(toggle);
   card.appendChild(header);
 
-  const meta = document.createElement('div');
-  meta.className = 'kvs mono';
-  function row(k, v) {
-    const kEl = document.createElement('div'); kEl.className = 'muted'; kEl.textContent = k;
-    const vEl = document.createElement('div'); vEl.textContent = v ?? '';
-    meta.appendChild(kEl); meta.appendChild(vEl);
-  }
-  row('enabled', String(!!acc.enabled));
-  row('success_count', acc.success_count ?? 0);
-  row('error_count', acc.error_count ?? 0);
-  row('last_refresh_status', acc.last_refresh_status);
-  row('last_refresh_time', acc.last_refresh_time);
-  row('clientId', acc.clientId);
-  row('hasRefreshToken', acc.refreshToken ? 'yes' : 'no');
-  row('hasAccessToken', acc.accessToken ? 'yes' : 'no');
-  row('created_at', acc.created_at);
-  row('updated_at', acc.updated_at);
-  if (acc.other) {
-    row('other', JSON.stringify(acc.other));
-  }
-  card.appendChild(meta);
+  // Body: stats
+  const body = document.createElement('div');
+  body.className = 'account-card__body';
+  const stats = document.createElement('div');
+  stats.className = 'account-stats';
 
-  // quick edit form
-  const editRow = document.createElement('div');
-  editRow.className = 'row';
-  editRow.style.marginTop = '8px';
-  const labelField = document.createElement('input');
-  labelField.placeholder = 'label';
-  labelField.value = acc.label || '';
-  const accessField = document.createElement('input');
-  accessField.placeholder = 'accessToken（可选）';
-  accessField.value = acc.accessToken || '';
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'btn-secondary';
-  saveBtn.textContent = '保存';
-  saveBtn.onclick = async () => {
-    await updateAccount(acc.id, { label: labelField.value, accessToken: accessField.value });
-  };
-  editRow.appendChild(labelField);
-  editRow.appendChild(accessField);
-  editRow.appendChild(saveBtn);
-  card.appendChild(editRow);
+  function createStat(label, value, type) {
+    const stat = document.createElement('div');
+    stat.className = 'stat stat--' + type;
+    const statLabel = document.createElement('span');
+    statLabel.className = 'stat-label';
+    statLabel.textContent = label;
+    const statValue = document.createElement('span');
+    statValue.className = 'stat-value';
+    statValue.textContent = value ?? 0;
+    stat.appendChild(statLabel);
+    stat.appendChild(statValue);
+    return stat;
+  }
+
+  stats.appendChild(createStat('成功', acc.success_count, 'success'));
+  stats.appendChild(createStat('失败', acc.error_count, 'error'));
+  body.appendChild(stats);
+  card.appendChild(body);
+
+  // Footer: buttons
+  const footer = document.createElement('footer');
+  footer.className = 'account-card__footer';
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'card-btn card-btn--warn';
+  refreshBtn.textContent = '刷新';
+  refreshBtn.onclick = (e) => { e.stopPropagation(); refreshAccount(acc.id); };
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'card-btn card-btn--danger';
+  delBtn.textContent = '删除';
+  delBtn.onclick = (e) => { e.stopPropagation(); deleteAccount(acc.id); };
+
+  footer.appendChild(refreshBtn);
+  footer.appendChild(delBtn);
+  card.appendChild(footer);
 
   return card;
-}
-
-// Virtual scroll implementation with auto height adjustment
-class VirtualScroll {
-  constructor(container, items, itemHeight, bufferSize = 3) {
-    this.container = container;
-    this.items = items;
-    this.itemHeight = itemHeight;
-    this.bufferSize = bufferSize;
-    this.visibleStart = 0;
-    this.visibleEnd = 0;
-    this.renderedItems = new Map();
-    this.measuredHeights = new Map();
-    this.heightAdjusted = false;
-    
-    this.viewport = document.createElement('div');
-    this.viewport.className = 'list-viewport';
-    this.content = document.createElement('div');
-    this.content.className = 'list-content';
-    this.viewport.appendChild(this.content);
-    
-    this.container.innerHTML = '';
-    this.container.appendChild(this.viewport);
-    
-    this.container.addEventListener('scroll', () => this.onScroll());
-    this.render();
-    
-    // Auto-measure after first render
-    requestAnimationFrame(() => this.measureAndAdjust());
-  }
-  
-  onScroll() {
-    requestAnimationFrame(() => this.render());
-  }
-  
-  measureAndAdjust() {
-    let maxHeight = 0;
-    let needsAdjustment = false;
-    
-    // Measure all currently rendered items
-    for (const [idx, element] of this.renderedItems.entries()) {
-      const rect = element.getBoundingClientRect();
-      const actualHeight = rect.height + 12; // +12 for gap
-      this.measuredHeights.set(idx, actualHeight);
-      
-      if (actualHeight > maxHeight) {
-        maxHeight = actualHeight;
-      }
-      
-      // Check if actual height exceeds estimated height
-      if (actualHeight > this.itemHeight * 0.95) {
-        needsAdjustment = true;
-      }
-    }
-    
-    // Auto-adjust if needed
-    if (needsAdjustment && maxHeight > this.itemHeight) {
-      console.log(`[VirtualScroll] 检测到重影，调整高度: ${this.itemHeight}px -> ${Math.ceil(maxHeight)}px`);
-      this.itemHeight = Math.ceil(maxHeight);
-      this.heightAdjusted = true;
-      
-      // Re-render with new height
-      this.reposition();
-    }
-  }
-  
-  reposition() {
-    // Reposition all rendered items with new height
-    for (const [idx, element] of this.renderedItems.entries()) {
-      element.style.top = (idx * this.itemHeight) + 'px';
-    }
-    
-    // Update viewport height
-    this.viewport.style.height = (this.items.length * this.itemHeight) + 'px';
-  }
-  
-  render() {
-    const scrollTop = this.container.scrollTop;
-    const containerHeight = this.container.clientHeight;
-    
-    const start = Math.floor(scrollTop / this.itemHeight);
-    const end = Math.ceil((scrollTop + containerHeight) / this.itemHeight);
-    
-    const bufferedStart = Math.max(0, start - this.bufferSize);
-    const bufferedEnd = Math.min(this.items.length, end + this.bufferSize);
-    
-    if (bufferedStart === this.visibleStart && bufferedEnd === this.visibleEnd) {
-      return;
-    }
-    
-    this.visibleStart = bufferedStart;
-    this.visibleEnd = bufferedEnd;
-    
-    // Set viewport height
-    this.viewport.style.height = (this.items.length * this.itemHeight) + 'px';
-    
-    // Remove items outside visible range
-    for (const [idx, element] of this.renderedItems.entries()) {
-      if (idx < bufferedStart || idx >= bufferedEnd) {
-        element.remove();
-        this.renderedItems.delete(idx);
-      }
-    }
-    
-    // Add items in visible range
-    const fragment = document.createDocumentFragment();
-    let newItemsAdded = false;
-    
-    for (let i = bufferedStart; i < bufferedEnd; i++) {
-      if (!this.renderedItems.has(i)) {
-        const item = createAccountCard(this.items[i]);
-        item.style.position = 'absolute';
-        item.style.top = (i * this.itemHeight) + 'px';
-        item.style.left = '0';
-        item.style.right = '0';
-        this.renderedItems.set(i, item);
-        fragment.appendChild(item);
-        newItemsAdded = true;
-      }
-    }
-    
-    if (fragment.childNodes.length > 0) {
-      this.content.appendChild(fragment);
-      
-      // Measure new items after they're added to DOM
-      if (newItemsAdded && !this.heightAdjusted) {
-        requestAnimationFrame(() => this.measureAndAdjust());
-      }
-    }
-  }
-  
-  update(items) {
-    this.items = items;
-    this.renderedItems.clear();
-    this.measuredHeights.clear();
-    this.heightAdjusted = false;
-    this.content.innerHTML = '';
-    this.visibleStart = -1; // Force re-render
-    this.visibleEnd = -1;
-    requestAnimationFrame(() => {
-      this.render();
-      this.measureAndAdjust();
-    });
-  }
-  
-  destroy() {
-    this.container.removeEventListener('scroll', this.onScroll);
-    this.renderedItems.clear();
-    this.measuredHeights.clear();
-  }
 }
 
 function renderAccounts(list){
   accountsData = list;
   const root = document.getElementById('accounts');
+  root.innerHTML = '';
   
   if (!Array.isArray(list) || list.length === 0) {
-    if (virtualScroll) {
-      virtualScroll.destroy();
-      virtualScroll = null;
-    }
-    root.innerHTML = '';
     const empty = document.createElement('div');
     empty.className = 'muted';
     empty.textContent = '暂无账号';
@@ -847,14 +785,14 @@ function renderAccounts(list){
     return;
   }
   
-  // Estimate item height (card height ~280px with gap)
-  const estimatedItemHeight = 292;
+  const grid = document.createElement('div');
+  grid.className = 'account-grid';
   
-  if (virtualScroll) {
-    virtualScroll.update(list);
-  } else {
-    virtualScroll = new VirtualScroll(root, list, estimatedItemHeight);
-  }
+  list.forEach(acc => {
+    grid.appendChild(createAccountCard(acc));
+  });
+  
+  root.appendChild(grid);
 }
 
 async function loadAccounts(){

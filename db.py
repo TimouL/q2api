@@ -94,9 +94,17 @@ class SQLiteBackend(DatabaseBackend):
                 updated_at TEXT,
                 enabled INTEGER DEFAULT 1,
                 error_count INTEGER DEFAULT 0,
-                success_count INTEGER DEFAULT 0
+                success_count INTEGER DEFAULT 0,
+                throttled_until REAL DEFAULT 0
             )
         """)
+        
+        # Migration: add throttled_until if not exists
+        try:
+            await self._conn.execute("ALTER TABLE accounts ADD COLUMN throttled_until REAL DEFAULT 0")
+            await self._conn.commit()
+        except Exception:
+            pass
         
         # Create indexes for performance
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_enabled ON accounts (enabled);")
@@ -160,9 +168,15 @@ class PostgresBackend(DatabaseBackend):
                     updated_at TEXT,
                     enabled INTEGER DEFAULT 1,
                     error_count INTEGER DEFAULT 0,
-                    success_count INTEGER DEFAULT 0
+                    success_count INTEGER DEFAULT 0,
+                    throttled_until REAL DEFAULT 0
                 )
             """)
+            # Migration: add throttled_until if not exists
+            try:
+                await conn.execute("ALTER TABLE accounts ADD COLUMN throttled_until REAL DEFAULT 0")
+            except Exception:
+                pass
         self._initialized = True
 
     async def close(self) -> None:
@@ -267,9 +281,15 @@ class MySQLBackend(DatabaseBackend):
                         updated_at TEXT,
                         enabled INT DEFAULT 1,
                         error_count INT DEFAULT 0,
-                        success_count INT DEFAULT 0
+                        success_count INT DEFAULT 0,
+                        throttled_until DOUBLE DEFAULT 0
                     )
                 """)
+                # Migration: add throttled_until if not exists
+                try:
+                    await cur.execute("ALTER TABLE accounts ADD COLUMN throttled_until DOUBLE DEFAULT 0")
+                except Exception:
+                    pass
         self._initialized = True
 
     async def close(self) -> None:

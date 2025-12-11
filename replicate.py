@@ -273,7 +273,11 @@ async def send_chat_request(
             await resp.aclose()
             if local_client:
                 await client.aclose()
-            raise httpx.HTTPError(f"Upstream error {resp.status_code}: {err}")
+            raise httpx.HTTPStatusError(
+                f"Upstream error {resp.status_code}: {err}",
+                request=req,
+                response=resp
+            )
         
         parser = AwsEventStreamParser()
         tracker = StreamTracker()

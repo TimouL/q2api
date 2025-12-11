@@ -303,19 +303,63 @@ def _extract_bearer(token_header: Optional[str]) -> Optional[str]:
         return token_header.split(" ", 1)[1].strip()
     return token_header.strip()
 
-async def _list_enabled_accounts(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+async def _list_enabled_accounts(limit: Optional[int] = None, exclude_throttled: bool = True) -> List[Dict[str, Any]]:
+    now = time.time()
+    throttle_condition = f" AND (throttled_until IS NULL OR throttled_until < {now})" if exclude_throttled else ""
+    
     if LAZY_ACCOUNT_POOL_ENABLED:
         order_direction = "DESC" if LAZY_ACCOUNT_POOL_ORDER_DESC else "ASC"
-        query = f"SELECT * FROM accounts WHERE enabled=1 ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction}"
+        query = f"SELECT * FROM accounts WHERE enabled=1{throttle_condition} ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction}"
         if limit:
             query += f" LIMIT {limit}"
         rows = await _db.fetchall(query)
     else:
-        query = "SELECT * FROM accounts WHERE enabled=1 ORDER BY created_at DESC"
+        query = f"SELECT * FROM accounts WHERE enabled=1{throttle_condition} ORDER BY created_at DESC"
         if limit:
             query += f" LIMIT {limit}"
         rows = await _db.fetchall(query)
     return [_row_to_dict(r) for r in rows]
+
+async def _list_enabled_accounts_excluding(exclude_ids: List[str], limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """List enabled accounts excluding specified IDs and throttled accounts."""
+    now = time.time()
+    throttle_condition = f"(throttled_until IS NULL OR throttled_until < {now})"
+    
+    if exclude_ids:
+        placeholders = ",".join(["?" for _ in exclude_ids])
+        exclude_condition = f"id NOT IN ({placeholders})"
+        where_clause = f"enabled=1 AND {throttle_condition} AND {exclude_condition}"
+    else:
+        where_clause = f"enabled=1 AND {throttle_condition}"
+    
+    if LAZY_ACCOUNT_POOL_ENABLED:
+        order_direction = "DESC" if LAZY_ACCOUNT_POOL_ORDER_DESC else "ASC"
+        query = f"SELECT * FROM accounts WHERE {where_clause} ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction}"
+        if limit:
+            query += f" LIMIT {limit}"
+        rows = await _db.fetchall(query, tuple(exclude_ids) if exclude_ids else ())
+    else:
+        query = f"SELECT * FROM accounts WHERE {where_clause} ORDER BY created_at DESC"
+        if limit:
+            query += f" LIMIT {limit}"
+        rows = await _db.fetchall(query, tuple(exclude_ids) if exclude_ids else ())
+    return [_row_to_dict(r) for r in rows]
+
+async def _throttle_account(account_id: str, base_backoff: float = 30.0, max_backoff: float = 300.0) -> None:
+    """Mark account as throttled with exponential backoff."""
+    row = await _db.fetchone("SELECT error_count, throttled_until FROM accounts WHERE id=?", (account_id,))
+    if not row:
+        return
+    
+    error_count = (row.get('error_count') or 0) + 1
+    backoff = min(base_backoff * (2 ** (error_count - 1)), max_backoff)
+    throttled_until = time.time() + backoff
+    
+    await _db.execute(
+        "UPDATE accounts SET throttled_until=?, error_count=?, updated_at=? WHERE id=?",
+        (throttled_until, error_count, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), account_id)
+    )
+    print(f"[Throttle] Account {account_id[:8]}... throttled for {backoff:.0f}s (error_count={error_count})")
 
 async def _list_disabled_accounts() -> List[Dict[str, Any]]:
     rows = await _db.fetchall("SELECT * FROM accounts WHERE enabled=0 ORDER BY created_at DESC")
@@ -588,10 +632,12 @@ def _get_client_ip(request: Request) -> str:
         return real_ip.strip()
     return request.client.host if request.client else "unknown"
 
+MAX_RETRY_ON_THROTTLE = 3  # Maximum retry attempts when 429 is encountered
+
 @app.post("/v1/messages")
 async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[str, Any] = Depends(require_account)):
     """
-    Claude-compatible messages endpoint.
+    Claude-compatible messages endpoint with retry on 429.
     """
     client_ip = _get_client_ip(request)
     print(f"[Request] IP: {client_ip}, Model: {req.model}")
@@ -603,65 +649,16 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
 
-    # 2. Send upstream
-    async def _send_upstream_raw() -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], Any, Optional[AsyncGenerator[Any, None]]]:
-        access = account.get("accessToken")
+    # Helper to send request with a specific account
+    async def _send_with_account(acc: Dict[str, Any]) -> Tuple[Any, Any, Any]:
+        access = acc.get("accessToken")
         if not access:
-            refreshed = await refresh_access_token_in_db(account["id"])
+            refreshed = await refresh_access_token_in_db(acc["id"])
             access = refreshed.get("accessToken")
             if not access:
                 raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
         
-        # We use the modified send_chat_request which accepts raw_payload
-        # and returns (text, text_stream, tracker, event_stream)
         return await send_chat_request(
-            access_token=access,
-            messages=[], # Not used when raw_payload is present
-            model=req.model,
-            stream=req.stream,
-            client=GLOBAL_CLIENT,
-            raw_payload=aq_request
-        )
-
-    try:
-        _, _, tracker, event_stream = await _send_upstream_raw()
-        
-        if not req.stream:
-            # Non-streaming: we need to consume the stream and build response
-            # But wait, send_chat_request with stream=False returns text, but we need structured response
-            # Actually, for Claude format, we might want to parse the events even for non-streaming
-            # to get tool calls etc correctly.
-            # However, our modified send_chat_request returns event_stream if raw_payload is used AND stream=True?
-            # Let's check replicate.py modification.
-            # If stream=False, it returns text. But text might not be enough for tool calls.
-            # For simplicity, let's force stream=True internally and aggregate if req.stream is False.
-            pass
-    except Exception as e:
-        await _update_stats(account["id"], False)
-        raise
-
-    # We always use streaming upstream to handle events properly
-    try:
-        # Force stream=True for upstream to get events
-        # But wait, send_chat_request logic: if stream=True, returns event_stream
-        # We need to call it with stream=True
-        pass
-    except:
-        pass
-        
-    # Re-implementing logic to be cleaner
-    
-    # Always stream from upstream to get full event details
-    event_iter = None
-    first_event_received = False
-    try:
-        access = account.get("accessToken")
-        if not access:
-            refreshed = await refresh_access_token_in_db(account["id"])
-            access = refreshed.get("accessToken")
-        
-        # We call with stream=True to get the event iterator
-        _, _, tracker, event_iter = await send_chat_request(
             access_token=access,
             messages=[],
             model=req.model,
@@ -669,11 +666,59 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
             client=GLOBAL_CLIENT,
             raw_payload=aq_request
         )
-        
-        if not event_iter:
-             raise HTTPException(status_code=502, detail="No event stream returned")
 
-        # Handler
+    # 2. Try with retry on 429
+    current_account = account
+    tried_account_ids: List[str] = []
+    event_iter = None
+    tracker = None
+    last_error = None
+    
+    for attempt in range(MAX_RETRY_ON_THROTTLE + 1):
+        try:
+            tried_account_ids.append(current_account["id"])
+            _, _, tracker, event_iter = await _send_with_account(current_account)
+            
+            if not event_iter:
+                raise HTTPException(status_code=502, detail="No event stream returned")
+            break  # Success, exit retry loop
+            
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            last_error = e
+            
+            if status_code == 429:
+                # Throttle this account
+                await _throttle_account(current_account["id"])
+                print(f"[Retry] Account {current_account['id'][:8]}... got 429, attempt {attempt + 1}/{MAX_RETRY_ON_THROTTLE + 1}")
+                
+                if attempt < MAX_RETRY_ON_THROTTLE:
+                    # Try to get another account
+                    candidates = await _list_enabled_accounts_excluding(tried_account_ids, limit=5)
+                    if candidates:
+                        current_account = random.choice(candidates)
+                        print(f"[Retry] Switching to account {current_account['id'][:8]}...")
+                        continue
+                    else:
+                        print("[Retry] No more available accounts")
+                
+                # All retries exhausted or no more accounts
+                raise HTTPException(status_code=429, detail="All accounts rate limited: Too many requests")
+            
+            elif status_code == 400:
+                await _update_stats(current_account["id"], False)
+                raise HTTPException(status_code=400, detail=f"Upstream bad request: {str(e)}")
+            else:
+                await _update_stats(current_account["id"], False)
+                raise HTTPException(status_code=502, detail=f"Upstream error {status_code}: {str(e)}")
+                
+        except Exception as e:
+            await _update_stats(current_account["id"], False)
+            raise
+    
+    # 3. Process the stream
+    first_event_received = False
+    try:
         # Calculate input tokens
         text_to_count = ""
         if req.system:
@@ -721,12 +766,12 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                         yield sse
                 async for sse in handler.finish():
                     yield sse
-                await _update_stats(account["id"], True)
+                await _update_stats(current_account["id"], True)
             except GeneratorExit:
                 # Client disconnected - update stats but don't re-raise
-                await _update_stats(account["id"], tracker.has_content if tracker else False)
+                await _update_stats(current_account["id"], tracker.has_content if tracker else False)
             except Exception:
-                await _update_stats(account["id"], False)
+                await _update_stats(current_account["id"], False)
                 raise
 
         if req.stream:
@@ -827,6 +872,21 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 "usage": usage
             })
 
+    except httpx.HTTPStatusError as e:
+        try:
+            if event_iter and hasattr(event_iter, "aclose"):
+                await event_iter.aclose()
+        except Exception:
+            pass
+        await _update_stats(current_account["id"], False)
+        status_code = e.response.status_code
+        if status_code == 429:
+            await _throttle_account(current_account["id"])
+            raise HTTPException(status_code=429, detail="Upstream rate limited: Too many requests")
+        elif status_code == 400:
+            raise HTTPException(status_code=400, detail=f"Upstream bad request: {str(e)}")
+        else:
+            raise HTTPException(status_code=502, detail=f"Upstream error {status_code}: {str(e)}")
     except Exception as e:
         # Ensure event_iter (if created) is closed to release upstream connection
         try:
@@ -834,7 +894,7 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 await event_iter.aclose()
         except Exception:
             pass
-        await _update_stats(account["id"], False)
+        await _update_stats(current_account["id"], False)
         raise
 
 @app.post("/v1/messages/count_tokens")
