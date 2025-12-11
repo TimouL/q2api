@@ -517,6 +517,30 @@ async function loadStorageStatus(){
 
     el.className = cls;
     el.textContent = txt;
+
+    // 为 DEGRADED 或 LOCAL 状态添加点击重连功能
+    if (backend === 'sqlite' && git.enabled && (git.mode === 'DEGRADED' || git.mode === 'LOCAL')) {
+      el.style.cursor = 'pointer';
+      el.onclick = async () => {
+        el.textContent = txt + ' (重连中...)';
+        el.style.cursor = 'wait';
+        try {
+          const resp = await authFetch(api('/v2/gitstore/reconnect'), { method: 'POST' });
+          const result = await resp.json();
+          if (result.success) {
+            showToast('Gitstore 重连成功', 'success');
+          } else {
+            showToast('重连失败: ' + (result.error || '未知错误'), 'error');
+          }
+        } catch (err) {
+          showToast('重连请求失败: ' + err.message, 'error');
+        }
+        loadStorageInfo(); // 刷新状态
+      };
+    } else {
+      el.style.cursor = 'default';
+      el.onclick = null;
+    }
   } catch (e) {
     el.className = 'chip chip-warn';
     el.textContent = 'DB: 获取失败';
