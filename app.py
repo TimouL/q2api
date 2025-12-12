@@ -832,11 +832,11 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                 # Log successful request if enabled (upstream request/response info)
                 if REQUEST_LOGGING_ENABLED:
                     log_text = (
-                        f"[成功请求] Model: {map_model_name(req.model)}, IP: {client_ip}\n\n"
-                        f"--- 上游请求URL ---\n{tracker.upstream_url}\n\n"
-                        f"--- 上游请求体 ---\n{tracker.upstream_request_body}\n\n"
-                        f"--- 上游响应状态 ---\n{tracker.upstream_status}\n\n"
-                        f"--- 上游响应体(首个) ---\n{tracker.upstream_first_event or '(无)'}"
+                        f"[成功请求] Model: {map_model_name(req.model)}, IP: {client_ip}\n"
+                        f"Status: {tracker.upstream_status}\n"
+                        f"Response: {tracker.upstream_first_event or '(无)'}\n"
+                        f"Request URL: {tracker.upstream_url}\n"
+                        f"Request Body: {tracker.upstream_request_body}"
                     )
                     add_structured_log(log_text, kind="request")
             except GeneratorExit:
@@ -1057,11 +1057,11 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
             # Log successful request if enabled (upstream request/response info)
             if REQUEST_LOGGING_ENABLED:
                 log_text = (
-                    f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n"
-                    f"--- 上游请求URL ---\n{tracker.upstream_url}\n\n"
-                    f"--- 上游请求体 ---\n{tracker.upstream_request_body}\n\n"
-                    f"--- 上游响应状态 ---\n{tracker.upstream_status}\n\n"
-                    f"--- 上游响应体(首个) ---\n{tracker.upstream_first_event or '(无)'}"
+                    f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n"
+                    f"Status: {tracker.upstream_status}\n"
+                    f"Response: {tracker.upstream_first_event or '(无)'}\n"
+                    f"Request URL: {tracker.upstream_url}\n"
+                    f"Request Body: {tracker.upstream_request_body}"
                 )
                 add_structured_log(log_text, kind="request")
             
@@ -1130,11 +1130,11 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                     # Log successful request if enabled (upstream request/response info)
                     if REQUEST_LOGGING_ENABLED:
                         log_text = (
-                            f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n\n"
-                            f"--- 上游请求URL ---\n{tracker.upstream_url}\n\n"
-                            f"--- 上游请求体 ---\n{tracker.upstream_request_body}\n\n"
-                            f"--- 上游响应状态 ---\n{tracker.upstream_status}\n\n"
-                            f"--- 上游响应体(首个) ---\n{tracker.upstream_first_event or '(无)'}"
+                            f"[成功请求] Model: {map_model_name(model)}, IP: {client_ip}\n"
+                            f"Status: {tracker.upstream_status}\n"
+                            f"Response: {tracker.upstream_first_event or '(无)'}\n"
+                            f"Request URL: {tracker.upstream_url}\n"
+                            f"Request Body: {tracker.upstream_request_body}"
                         )
                         add_structured_log(log_text, kind="request")
                 except GeneratorExit:
