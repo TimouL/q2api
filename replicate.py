@@ -34,6 +34,8 @@ class StreamTracker:
         self.upstream_request_body: str = ""
         self.upstream_status: int = 0
         self.upstream_first_event: str = ""
+        # Original request body (before conversion) for logging
+        self.original_request_body: str = ""
     
     async def track(self, gen: AsyncGenerator[str, None]) -> AsyncGenerator[str, None]:
         async for item in gen:
@@ -224,7 +226,8 @@ async def send_chat_request(
     stream: bool = False,
     timeout: Tuple[int,int] = (15,300),
     client: Optional[httpx.AsyncClient] = None,
-    raw_payload: Optional[Dict[str, Any]] = None
+    raw_payload: Optional[Dict[str, Any]] = None,
+    original_request_body: str = ""
 ) -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], StreamTracker, Optional[AsyncGenerator[Any, None]]]:
     url, headers_from_log, body_json = load_template()
     headers_from_log["amz-sdk-invocation-id"] = str(uuid.uuid4())
@@ -280,11 +283,13 @@ async def send_chat_request(
                 await client.aclose()
             
             # Log detailed error info for debugging (single log entry for better display)
+            original_body_preview = original_request_body[:2000] + "..." if len(original_request_body) > 2000 else original_request_body
             error_detail = (
                 f"[Upstream Error] Status: {resp.status_code}\n"
                 f"Response: {err}\n"
                 f"Request URL: {url}\n"
-                f"Request Body: {payload_str[:2000]}..."
+                f"Original Request Body: {original_body_preview}\n"
+                f"Converted Request Body: {payload_str[:2000]}..."
             )
             print(error_detail)
             
@@ -301,6 +306,7 @@ async def send_chat_request(
         tracker.upstream_url = url
         tracker.upstream_request_body = payload_str
         tracker.upstream_status = resp.status_code
+        tracker.original_request_body = original_request_body
         
         # Track if the response has been consumed to avoid double-close
         response_consumed = False

@@ -711,6 +711,9 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
 
+    # Serialize original request body for logging
+    original_request_str = json.dumps(req.model_dump(), ensure_ascii=False, default=str)
+
     # Helper to send request with a specific account
     async def _send_with_account(acc: Dict[str, Any]) -> Tuple[Any, Any, Any]:
         access = acc.get("accessToken")
@@ -726,7 +729,8 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
             model=req.model,
             stream=True,
             client=GLOBAL_CLIENT,
-            raw_payload=aq_request
+            raw_payload=aq_request,
+            original_request_body=original_request_str
         )
 
     # 2. Try with retry on 429
@@ -836,7 +840,8 @@ async def claude_messages(request: Request, req: ClaudeRequest, account: Dict[st
                         f"Status: {tracker.upstream_status}\n"
                         f"Response: {tracker.upstream_first_event or '(无)'}\n"
                         f"Request URL: {tracker.upstream_url}\n"
-                        f"Request Body: {tracker.upstream_request_body}"
+                        f"Original Request Body: {tracker.original_request_body}\n"
+                        f"Converted Request Body: {tracker.upstream_request_body}"
                     )
                     add_structured_log(log_text, kind="request")
             except GeneratorExit:
@@ -1023,6 +1028,9 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
     model = req.model
     do_stream = bool(req.stream)
 
+    # Serialize original request body for logging
+    original_request_str = json.dumps(req.model_dump(), ensure_ascii=False, default=str)
+
     async def _send_upstream(stream: bool) -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], Any]:
         access = account.get("accessToken")
         if not access:
@@ -1033,7 +1041,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
         # Note: send_chat_request signature changed, but we use keyword args so it should be fine if we don't pass raw_payload
         # But wait, the return signature changed too! It now returns 4 values.
         # We need to unpack 4 values.
-        result = await send_chat_request(access, [m.model_dump() for m in req.messages], model=model, stream=stream, client=GLOBAL_CLIENT)
+        result = await send_chat_request(access, [m.model_dump() for m in req.messages], model=model, stream=stream, client=GLOBAL_CLIENT, original_request_body=original_request_str)
         return result[0], result[1], result[2] # Ignore the 4th value (event_stream) for OpenAI endpoint
 
     if not do_stream:
@@ -1061,7 +1069,8 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                     f"Status: {tracker.upstream_status}\n"
                     f"Response: {tracker.upstream_first_event or '(无)'}\n"
                     f"Request URL: {tracker.upstream_url}\n"
-                    f"Request Body: {tracker.upstream_request_body}"
+                    f"Original Request Body: {tracker.original_request_body}\n"
+                    f"Converted Request Body: {tracker.upstream_request_body}"
                 )
                 add_structured_log(log_text, kind="request")
             
@@ -1134,7 +1143,8 @@ async def chat_completions(request: Request, req: ChatCompletionRequest, account
                             f"Status: {tracker.upstream_status}\n"
                             f"Response: {tracker.upstream_first_event or '(无)'}\n"
                             f"Request URL: {tracker.upstream_url}\n"
-                            f"Request Body: {tracker.upstream_request_body}"
+                            f"Original Request Body: {tracker.original_request_body}\n"
+                            f"Converted Request Body: {tracker.upstream_request_body}"
                         )
                         add_structured_log(log_text, kind="request")
                 except GeneratorExit:
