@@ -377,9 +377,7 @@
 
     /* 日志条目样式 */
     .log-list { 
-      display:flex; 
-      flex-direction:column; 
-      gap:8px; 
+      display:block;
       height:60vh;
       max-height:60vh; 
       overflow-y:auto; 
@@ -391,6 +389,8 @@
       border-radius:8px;
       background:rgba(12,19,34,.6);
       overflow:hidden;
+      margin-bottom:8px;
+      flex-shrink:0;
     }
     .log-item--error { border-left:3px solid var(--danger); }
     .log-summary {
